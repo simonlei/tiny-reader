@@ -1,0 +1,22 @@
+node_modules/
+dist/
+dist-ssr/
+target/
+.vite/
+
+# tauri-build 生成的 schema，不必入库
+src-tauri/gen/
+*.log
+.DS_Store
+Thumbs.db
+
+# 服务端运行时数据（含 token，不入库）
+server/config.toml
+server/data/
+config.toml
+*.db
+*.db-shm
+*.db-wal
+
+# 提交时临时使用的 commit message 文件
+.commitmsg

@@ -1,0 +1,12 @@
+# 换行符：shell 脚本必须 LF（CRLF 会让 bash 把 \r 当成变量值的一部分），
+# 批处理必须 CRLF（cmd.exe 处理 LF 会串命令）。
+* text=auto
+
+*.sh text eol=lf
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# 二进制资源，不要做任何转换
+*.png binary
+*.ico binary
+*.icns binary

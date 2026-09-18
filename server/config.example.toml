@@ -1,0 +1,40 @@
+# Tiny Reader 服务端配置
+#
+# 首次启动时，若找不到配置文件，服务端会自动在以下位置生成一份带随机 token 的：
+#   1) --config 指定的路径
+#   2) $TINY_READER_CONFIG 环境变量
+#   3) 当前目录下的 config.toml
+#   4) 可执行文件同级的 config.toml
+#
+# 客户端（Tauri 应用）需要在「设置」里填写这里的服务端地址和 auth.token。
+
+[server]
+# 监听地址。0.0.0.0 表示允许局域网内的其他设备访问（手机、另一台电脑等）
+host = "127.0.0.1"
+port = 8787
+
+[auth]
+# 单用户模式：写死一个 token，客户端只要知道它就能读取订阅源和文章。
+# 建议改成足够长的随机串；也可以用环境变量 TINY_READER_TOKEN 覆盖。
+token = "change-me-please-use-a-long-random-string"
+
+[storage]
+# SQLite 数据库路径（相对路径按配置文件所在目录解析）
+database_path = "data/tiny-reader.db"
+
+# 每个订阅源最多保留多少篇文章。超出后自动清理最旧的「已读且未加星」文章。
+# 设为 0 表示不限制。
+max_articles_per_feed = 2000
+
+[refresh]
+# 刷新时并发拉取多少个源
+concurrency = 8
+
+# 单个请求超时（秒）
+timeout_secs = 30
+
+# 拉取 RSS 时使用的 User-Agent
+user_agent = "TinyReader/0.1"
+
+# 定时自动刷新的间隔（秒）。0 表示关闭，只在客户端点「刷新」时拉取。
+auto_interval_secs = 0

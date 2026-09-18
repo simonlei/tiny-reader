@@ -1,0 +1,63 @@
+# 独立 workspace：避免与 src-tauri 互相干扰
+[workspace]
+
+[package]
+name = "tiny-reader-server"
+version = "0.1.0"
+edition = "2021"
+description = "Tiny Reader 的数据服务端：负责拉取/保存 RSS 源与文章"
+
+[dependencies]
+# HTTP 服务
+axum = "0.8"
+tower-http = { version = "0.6", features = ["cors", "trace"] }
+
+# 异步运行时
+tokio = { version = "1", features = ["full"] }
+
+# 序列化
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# 拉取 RSS
+reqwest = { version = "0.12", default-features = false, features = [
+  "rustls-tls",
+  "gzip",
+  "brotli",
+  "deflate",
+  "charset",
+] }
+
+# 解析 RSS / Atom / JSON Feed
+feed-rs = "2"
+
+# 存储（bundled = 自带 SQLite，无需系统依赖）
+rusqlite = { version = "0.32", features = ["bundled"] }
+
+# 时间
+chrono = { version = "0.4", features = ["serde"] }
+
+# 配置
+toml = "0.8"
+
+# CLI
+clap = { version = "4", features = ["derive"] }
+
+# 日志
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# 错误
+thiserror = "2"
+anyhow = "1"
+
+# OPML 导入导出
+roxmltree = "0.20"
+
+# 生成默认 token
+rand = "0.8"
+
+[profile.release]
+opt-level = "s"
+lto = true
+strip = true

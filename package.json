@@ -1,0 +1,30 @@
+{
+  "name": "tiny-reader",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "跨平台的极简 RSS 阅读器（Tauri 2 + Vue 3 + Rust 服务端）",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "vue-tsc --noEmit",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "server": "cargo run --manifest-path server/Cargo.toml --",
+    "server:build": "cargo build --release --manifest-path server/Cargo.toml"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2.11.1",
+    "vue": "^3.5.13"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@types/node": "^22.13.0",
+    "@vitejs/plugin-vue": "^6.0.0",
+    "typescript": "~5.9.0",
+    "vite": "^7.1.0",
+    "vue-tsc": "^3.1.0"
+  }
+}
