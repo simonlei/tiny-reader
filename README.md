@@ -45,10 +45,16 @@ tiny-reader/
 │  │  ├─ api.rs             # Axum 路由 + token 鉴权中间件
 │  │  └─ models.rs
 │  └─ config.example.toml
-├─ dev.bat                  # 启动客户端开发模式
-├─ start-server.bat         # 启动服务端
+├─ dev.bat / dev.sh         # 启动客户端开发模式（cmd / Git Bash）
+├─ start-server.bat         # 启动服务端（cmd）
+├─ start-server.sh          # 启动服务端（Git Bash）
 └─ tools/                   # 图标生成、MSVC 环境脚本
 ```
+
+> Windows 下 `.bat` 和 `.sh` 是等价的两套启动脚本，都会自动加载 MSVC 环境。
+> Git Bash 里如果 `cmd.exe` 被禁用，`.sh` 会自动回退到 `source tools/msvc-env.sh`
+> （该脚本自动探测本机最新的 MSVC 工具集与 Windows SDK 版本）；
+> 也可以用 `MSVC_NO_CMD=1 ./start-server.sh` / `MSVC_NO_CMD=1 ./dev.sh` 强制走这条路径。
 
 ## 快速开始
 
@@ -59,7 +65,11 @@ cd server
 cargo run
 ```
 
-或者双击项目根目录的 `start-server.bat`（Windows，会自动加载 MSVC 环境）。
+或者双击项目根目录的 `start-server.bat`（Windows，会自动加载 MSVC 环境）；Git Bash 下用：
+
+```bash
+./start-server.sh
+```
 
 首次运行会在当前目录生成 `config.toml`，**终端里会打印生成的随机 token**，例如：
 
@@ -77,7 +87,7 @@ npm install
 npm run tauri dev
 ```
 
-或者直接双击 `dev.bat`。
+或者直接双击 `dev.bat`；Git Bash 下用 `./dev.sh`（依赖缺失时会自动 `npm install`）。
 
 ### 3. 配置连接
 
