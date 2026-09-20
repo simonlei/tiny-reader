@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  服务端默认跑在局域网内的 http://<ip>:8787，没有 HTTPS，
+  因此需要显式允许明文流量（与桌面端连同一个服务端的取舍一致）。
+-->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="true">
+        <trust-anchors>
+            <certificates src="system" />
+            <certificates src="user" />
+        </trust-anchors>
+    </base-config>
+</network-security-config>

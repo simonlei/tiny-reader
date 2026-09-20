@@ -9,17 +9,22 @@
 ```
 ┌────────────────────────┐        HTTP (Bearer token)        ┌─────────────────────────┐
 │  Tauri 2 + Vue 3 客户端 │  ───────────────────────────────▶ │  Rust 服务端 (Axum)      │
-│  · 只负责渲染与交互      │  ◀───────────────────────────────  │  · 定时/手动拉取 RSS     │
-│  · 设置存 localStorage   │        JSON over REST             │  · SQLite 持久化         │
-└────────────────────────┘                                    └─────────────────────────┘
-                                                                          │
+│  （Windows / macOS）    │  ◀───────────────────────────────  │  · 定时/手动拉取 RSS     │
+└────────────────────────┘                                   │  · SQLite 持久化         │
+┌────────────────────────┐                                   │                          │
+│  Kotlin + Compose 客户端│  ◀──────────────────────────────▶ │                          │
+│  （Android）            │        JSON over REST             └─────────────────────────┘
+└────────────────────────┘                                                │
                                                                           ▼
                                                                    各个 RSS / Atom 源
 ```
 
-- **客户端** `src-tauri/` + `src/`：Tauri 2 壳 + Vue 3 前端，本身不含任何业务逻辑数据。
+- **桌面客户端** `src-tauri/` + `src/`：Tauri 2 壳 + Vue 3 前端，本身不含任何业务逻辑数据。
+- **安卓客户端** `android/`：Kotlin + Jetpack Compose 原生实现，功能与桌面端一致，见 [`android/README.md`](android/README.md)。
 - **服务端** `server/`：Axum + SQLite，负责订阅源增删改查、RSS 拉取解析（支持 RSS / Atom / JSON Feed）、OPML 导入导出。
 - **鉴权**：单用户模式，服务端配置文件里写死一个 token，客户端在「设置」里填同一个 token 即可。
+
+三端连同一个服务端时，已读 / 星标 / 订阅列表完全共享。
 
 ## 目录结构
 
@@ -35,6 +40,11 @@ tiny-reader/
 │  ├─ src/lib.rs            # open_url / app_info 命令
 │  ├─ capabilities/
 │  └─ tauri.conf.json
+├─ android/                 # 安卓客户端（Kotlin + Compose）
+│  └─ app/src/main/java/com/simonlei/tinyreader/
+│     ├─ data/              # DTO / HTTP 客户端 / 偏好存储
+│     ├─ ui/                # 列表页、阅读页、抽屉、设置、ViewModel
+│     └─ util/              # 时间格式化、正文 HTML 处理
 ├─ server/                  # 数据服务端（Rust）
 │  ├─ src/
 │  │  ├─ main.rs            # 入口、CLI、优雅退出
@@ -97,6 +107,16 @@ npm run tauri dev
 - **访问 token**：填 `config.toml` 里 `auth.token` 的值。
 
 点「测试连接」验证，成功后保存即可。
+
+### 4.（可选）安卓客户端
+
+```bash
+cd android
+./gradlew installDebug        # 装到已连接的手机
+```
+
+手机不能填 `127.0.0.1`，要填电脑的局域网 IP，并把服务端 `config.toml` 里的
+`server.host` 改成 `0.0.0.0`。详见 [`android/README.md`](android/README.md)。
 
 ## 服务端配置
 
@@ -164,8 +184,9 @@ X-Auth-Token: <token>
 ## 打包
 
 ```bash
-npm run tauri build          # 客户端安装包
+npm run tauri build          # 桌面客户端安装包
 cargo build --release --manifest-path server/Cargo.toml   # 服务端可执行文件
+cd android && ./gradlew assembleRelease                   # 安卓 APK（未签名）
 ```
 
 ## 已知取舍

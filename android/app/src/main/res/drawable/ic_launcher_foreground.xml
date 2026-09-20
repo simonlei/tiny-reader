@@ -1,0 +1,23 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 24x24 的 RSS 图标缩放并居中到 108x108 的自适应图标安全区内 -->
+    <group
+        android:scaleX="2.0"
+        android:scaleY="2.0"
+        android:translateX="30"
+        android:translateY="30">
+        <path
+            android:fillColor="#4C8DFF"
+            android:pathData="M6.18,15.64c-1.16,0 -2.09,0.93 -2.09,2.09c0,1.16 0.93,2.09 2.09,2.09c1.16,0 2.09,-0.93 2.09,-2.09C8.27,16.57 7.34,15.64 6.18,15.64z" />
+        <path
+            android:fillColor="#4C8DFF"
+            android:pathData="M4,4.44v2.83c7.03,0 12.73,5.7 12.73,12.73h2.83C19.56,11.21 12.79,4.44 4,4.44z" />
+        <path
+            android:fillColor="#4C8DFF"
+            android:pathData="M4,10.1v2.83c3.9,0 7.07,3.17 7.07,7.07h2.83C13.9,14.36 9.64,10.1 4,10.1z" />
+    </group>
+</vector>

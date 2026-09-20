@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- 与桌面端 src/styles/main.css 的 CSS 变量保持一致 -->
+<resources>
+    <color name="bg">#14161A</color>
+    <color name="bg_alt">#101216</color>
+    <color name="accent">#4C8DFF</color>
+    <color name="ic_launcher_background">#101216</color>
+</resources>
