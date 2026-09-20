@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 import * as app from '@/stores/app'
-import type { ArticleFilter, Feed } from '@/api/types'
+import type { Feed } from '@/api/types'
 
 const emit = defineEmits<{
   add: []
@@ -31,12 +31,6 @@ const groups = computed<Group[]>(() => {
     .sort((a, b) => a[0].localeCompare(b[0], 'zh-Hans-CN'))
     .map(([name, feeds]) => ({ name, feeds }))
 })
-
-const filters: { key: ArticleFilter; label: string }[] = [
-  { key: 'all', label: '全部' },
-  { key: 'unread', label: '未读' },
-  { key: 'starred', label: '星标' },
-]
 
 function toggleGroup(name: string) {
   collapsed.value[name] = !collapsed.value[name]
@@ -73,32 +67,7 @@ function isCollapsed(name: string) {
         <span class="qi-label">全部文章</span>
         <span v-if="state.stats.unread" class="badge">{{ state.stats.unread }}</span>
       </button>
-      <button
-        class="quick-item"
-        :class="{ active: state.selectedFeedId == null && state.filter === 'starred' }"
-        @click="
-          () => {
-            app.selectFeed(null)
-            app.setFilter('starred')
-          }
-        "
-      >
-        <span class="qi-label">★ 星标</span>
-        <span v-if="state.stats.starred" class="badge dim">{{ state.stats.starred }}</span>
-      </button>
     </nav>
-
-    <div class="filter-row">
-      <button
-        v-for="f in filters"
-        :key="f.key"
-        class="seg"
-        :class="{ on: state.filter === f.key }"
-        @click="app.setFilter(f.key)"
-      >
-        {{ f.label }}
-      </button>
-    </div>
 
     <div class="feeds">
       <div class="feeds-head">
@@ -220,24 +189,6 @@ function isCollapsed(name: string) {
 }
 .quick-item.active {
   background: var(--accent-soft);
-  color: #cfe0ff;
-}
-
-.filter-row {
-  display: flex;
-  gap: 4px;
-  padding: 8px 12px 4px;
-}
-.seg {
-  flex: 1;
-  padding: 4px 0;
-  font-size: 12px;
-  background: transparent;
-  border-color: var(--border);
-}
-.seg.on {
-  background: var(--accent-soft);
-  border-color: var(--accent-dim);
   color: #cfe0ff;
 }
 

@@ -161,7 +161,10 @@ function scheduleAutoRead(id: number) {
     const feed = state.feeds.find((f) => f.id === a.feed_id)
     if (feed && feed.unread_count > 0) feed.unread_count -= 1
     if (state.stats.unread > 0) state.stats.unread -= 1
-    void api.setRead(id, true).catch(handleError)
+    void api
+      .setRead(id, true)
+      .then(() => loadStats())
+      .catch(handleError)
   }, AUTO_READ_DELAY)
 }
 
@@ -215,6 +218,7 @@ export async function toggleRead(article?: Article | null) {
   state.stats.unread = Math.max(0, state.stats.unread + (next ? -1 : 1))
   try {
     await api.setRead(a.id, next)
+    await loadStats()
   } catch (e) {
     handleError(e)
   }

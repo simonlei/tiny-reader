@@ -1,13 +1,19 @@
 <script setup lang="ts">
 import { nextTick, onMounted, ref, watch } from 'vue'
 import * as app from '@/stores/app'
-import type { Article } from '@/api/types'
+import type { Article, ArticleFilter } from '@/api/types'
 import { formatTime, stripHtml, truncate } from '@/lib/format'
 
 const { state } = app
 const currentFeedTitle = app.currentFeedTitle
 const hasMore = app.hasMore
 const listEl = ref<HTMLElement | null>(null)
+
+const filters: { key: ArticleFilter; label: string }[] = [
+  { key: 'all', label: '全部' },
+  { key: 'unread', label: '未读' },
+  { key: 'starred', label: '星标' },
+]
 
 // 选中项滚动到可视区域
 watch(
@@ -60,9 +66,19 @@ function snippet(a: Article): string {
     <header class="list-head">
       <div class="lh-title">
         <span class="truncate">{{ currentFeedTitle }}</span>
-        <span class="count text-mute">{{ state.total }}</span>
       </div>
       <div class="lh-actions">
+        <div class="filter-group">
+          <button
+            v-for="f in filters"
+            :key="f.key"
+            class="seg"
+            :class="{ on: state.filter === f.key }"
+            @click="app.setFilter(f.key)"
+          >
+            {{ f.label }}
+          </button>
+        </div>
         <button class="ghost" title="全部标为已读 (Shift+A)" @click="app.markAllRead()">
           全部已读
         </button>
@@ -119,28 +135,48 @@ function snippet(a: Article): string {
 
 .list-head {
   display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 10px 12px;
+  flex-direction: column;
+  gap: 7px;
+  padding: 8px 12px 9px;
   border-bottom: 1px solid var(--border-soft);
-  min-height: 44px;
 }
 .lh-title {
   display: flex;
   align-items: baseline;
+  justify-content: space-between;
   gap: 7px;
   min-width: 0;
   font-weight: 600;
   font-size: 13.5px;
 }
-.count {
-  font-size: 11.5px;
-  font-weight: 400;
+.lh-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 .lh-actions button {
   font-size: 12px;
   padding: 4px 8px;
+}
+
+.filter-group {
+  display: flex;
+  gap: 3px;
+  flex: 1;
+  min-width: 0;
+}
+.filter-group .seg {
+  flex: 1;
+  padding: 3px 0;
+  font-size: 12px;
+  background: transparent;
+  border-color: var(--border);
+  border-radius: var(--radius-sm);
+}
+.filter-group .seg.on {
+  background: var(--accent-soft);
+  border-color: var(--accent-dim);
+  color: #cfe0ff;
 }
 
 .list {
