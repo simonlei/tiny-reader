@@ -158,6 +158,43 @@ jobs:
           VERSION="${TAG#v}"
           node scripts/bump_version.js "$VERSION"
 
+      - name: Diagnose updater signing secrets
+        # 诊断签名密钥是否真正注入。若 secret 名不匹配，secrets.XXX 会静默
+        # 解析为空字符串，tauri-action 不报错但跳过签名，导致无 .sig /
+        # latest.json。此处只打印长度与格式，绝不输出完整密钥。
+        shell: bash
+        env:
+          SIGN_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          SIGN_PWD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          echo "=== updater signing secret diagnostics ==="
+          echo "runner: ${{ matrix.name }}"
+          if [ -z "$SIGN_KEY" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY is EMPTY or NOT set (check secret name)"
+          else
+            echo "TAURI_SIGNING_PRIVATE_KEY: present, length=${#SIGN_KEY}"
+            # 合法密钥是 base64，解码后应以 untrusted comment 开头
+            DEC="$(echo "$SIGN_KEY" | base64 -d 2>/dev/null | head -c 30)"
+            if [ -n "$DEC" ]; then
+              echo "decoded prefix: ${DEC}"
+            else
+              echo "::warning::key is NOT valid base64 or not decodable"
+            fi
+          fi
+          if [ -z "$SIGN_PWD" ]; then
+            echo "::error::TAURI_SIGNING_PRIVATE_KEY_PASSWORD is EMPTY or NOT set"
+          else
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD: present, length=${#SIGN_PWD}"
+          fi
+          echo "=== updater config in tauri.conf.json ==="
+          node -e "
+            const c=require('fs').readFileSync('src-tauri/tauri.conf.json','utf8');
+            const u=JSON.parse(c).plugins.updater;
+            console.log('active:', u.active);
+            console.log('pubkey set:', !!u.pubkey);
+            console.log('endpoints:', u.endpoints);
+          "
+
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
@@ -174,6 +211,19 @@ jobs:
           generateReleaseNotes: true
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
+
+      - name: Verify signing artifacts
+        # 构建后确认签名产物是否生成。若这里为空，说明签名未生效，
+        # 后续 sync-cos 必然找不到 latest.json。
+        shell: bash
+        run: |
+          echo "=== signing artifacts produced ==="
+          echo "--- .sig files ---"
+          find src-tauri/target -name '*.sig' 2>/dev/null || true
+          echo "--- latest.json ---"
+          find src-tauri/target -name 'latest.json' 2>/dev/null || true
+          echo "--- bundle dir listing ---"
+          find src-tauri/target -path '*bundle*' -maxdepth 4 -type d 2>/dev/null | head -20 || true
 
   # ========== 更新通道 + 安装包同步到腾讯云 COS ==========
   # 需同时等 release（客户端产物 + latest.json）和 build-server（服务端包）。
