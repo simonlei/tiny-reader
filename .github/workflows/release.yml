@@ -195,13 +195,34 @@ jobs:
             console.log('endpoints:', u.endpoints);
           "
 
+      - name: Normalize updater signing key
+        # GitHub Secret 在粘贴时极易带上尾部换行（LF）。Tauri CLI 对密钥做
+        # base64 解码，末尾多一个 LF 会直接失败：
+        #   failed to decode base64 key: Invalid symbol 10, offset 348.
+        # 这里去掉所有空白字符后重新导出，供后续 tauri-action 使用。
+        shell: bash
+        env:
+          RAW_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          RAW_PWD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+        run: |
+          CLEAN_KEY="$(printf '%s' "$RAW_KEY" | tr -d '[:space:]')"
+          CLEAN_PWD="$(printf '%s' "$RAW_PWD" | tr -d '[:space:]')"
+          echo "key length: ${#RAW_KEY} -> ${#CLEAN_KEY}"
+          if [ ${#CLEAN_KEY} -ne ${#RAW_KEY} ]; then
+            echo "::warning::stripped whitespace from signing key"
+          fi
+          {
+            echo "TAURI_SIGNING_PRIVATE_KEY=$CLEAN_KEY"
+            echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$CLEAN_PWD"
+          } >> "$GITHUB_ENV"
+
       - name: Build and publish
         uses: tauri-apps/tauri-action@v0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Tauri 更新器签名：生成各平台 .sig 并聚合为 latest.json
-          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          # Tauri 更新器签名：生成各平台 .sig 并聚合为 latest.json。
+          # 不再直接引用 secrets，改由上一个步骤清洗空白后写入 GITHUB_ENV，
+          # 此处自动继承（同名环境变量会覆盖 job 级定义）。
           CARGO_INCREMENTAL: '0'
         with:
           tagName: ${{ github.event.inputs.tag || github.ref_name }}
