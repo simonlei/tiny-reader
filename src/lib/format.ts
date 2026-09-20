@@ -1,7 +1,17 @@
-/** 相对时间：今天显示 HH:mm，今年显示 M月D日，更早显示 YYYY-M-D */
-export function formatTime(iso?: string | null): string {
-  if (!iso) return ''
-  const d = new Date(iso)
+/**
+ * 相对时间：今天显示 HH:mm，今年显示 M月D日，更早显示 YYYY-M-D
+ * @param iso 时间字符串（RFC3339）
+ * @param opts.fallback 为空时的兜底时间（通常是 fetched_at）。
+ *   传 null 表示「没有真实发表时间就不显示」，避免把拉取时间伪装成发表时间。
+ */
+export function formatTime(
+  iso?: string | null,
+  opts?: { fallback?: string | null },
+): string {
+  const fallback = opts && 'fallback' in opts ? opts.fallback : undefined
+  const raw = iso || fallback || ''
+  if (!raw) return ''
+  const d = new Date(raw)
   if (Number.isNaN(d.getTime())) return ''
   const now = new Date()
 

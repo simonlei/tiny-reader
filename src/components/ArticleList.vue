@@ -92,7 +92,7 @@ function snippet(a: Article): string {
           <span v-if="state.selectedFeedId == null" class="src truncate">
             {{ a.feed_title }}
           </span>
-          <span class="time">{{ formatTime(a.published_at || a.fetched_at) }}</span>
+          <span class="time">{{ formatTime(a.published_at, { fallback: null }) }}</span>
         </div>
         <p class="art-snippet">{{ snippet(a) }}</p>
       </article>

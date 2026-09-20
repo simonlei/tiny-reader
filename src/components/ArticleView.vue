@@ -3,6 +3,7 @@ import { computed, ref, watch, nextTick } from 'vue'
 import * as app from '@/stores/app'
 import { openExternal } from '@/lib/tauri'
 import { formatTime } from '@/lib/format'
+import { absolutizeHtml } from '@/lib/html'
 
 const { state } = app
 const selected = app.selectedArticle
@@ -20,9 +21,19 @@ watch(
   },
 )
 
-const body = computed(() => selected.value?.content || selected.value?.summary || '')
+// 正文：源内容是按原样保存的，这里只在渲染前把相对图片/链接地址补成绝对地址，
+// 否则会被解析到 tauri.localhost 上导致图片 404
+const body = computed(() => {
+  const raw = selected.value?.content || selected.value?.summary || ''
+  return absolutizeHtml(raw, selected.value?.feed_site_url)
+})
 const showFallbackHint = computed(
   () => !selected.value?.content && !!selected.value?.summary,
+)
+
+/** 发表时间；源未提供时为 ''，此时整段（含分隔符）都不渲染 */
+const fmtPublished = computed(() =>
+  formatTime(selected.value?.published_at, { fallback: null }),
 )
 
 function onContentClick(e: MouseEvent) {
@@ -43,8 +54,10 @@ function onContentClick(e: MouseEvent) {
       <header class="r-head">
         <div class="r-meta">
           <span class="r-src">{{ selected.feed_title || '未知来源' }}</span>
-          <span class="sep">·</span>
-          <span>{{ formatTime(selected.published_at || selected.fetched_at) }}</span>
+          <template v-if="fmtPublished">
+            <span class="sep">·</span>
+            <span>{{ fmtPublished }}</span>
+          </template>
           <span v-if="selected.author" class="sep">·</span>
           <span v-if="selected.author">{{ selected.author }}</span>
         </div>
