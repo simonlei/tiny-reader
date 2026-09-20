@@ -1,11 +1,24 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref, watch, nextTick } from 'vue'
 import * as app from '@/stores/app'
 import { openExternal } from '@/lib/tauri'
 import { formatTime } from '@/lib/format'
 
 const { state } = app
 const selected = app.selectedArticle
+
+// 正文滚动容器，切换文章时要把滚动条拉回顶部
+const bodyEl = ref<HTMLElement | null>(null)
+
+watch(
+  () => state.selectedId,
+  () => {
+    // 等新内容渲染完成后再归零，避免作用在旧内容上
+    nextTick(() => {
+      if (bodyEl.value) bodyEl.value.scrollTop = 0
+    })
+  },
+)
 
 const body = computed(() => selected.value?.content || selected.value?.summary || '')
 const showFallbackHint = computed(
@@ -59,7 +72,7 @@ function onContentClick(e: MouseEvent) {
         </div>
       </header>
 
-      <div class="r-body">
+      <div class="r-body" ref="bodyEl">
         <p v-if="showFallbackHint" class="fallback text-mute">
           该源只提供了摘要，点标题可在浏览器里查看全文。
         </p>
