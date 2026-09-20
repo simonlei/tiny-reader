@@ -189,8 +189,21 @@ jobs:
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
           mkdir -p cos-assets && cd cos-assets
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "latest.json"
-          # 按 latest.json 实际引用的文件名逐个下载（只信清单引用，兼容 Tauri 2.x 直接产出本体的形态）
+
+          # latest.json 由 tauri-action 在【签名生效】时才生成。
+          # 若缺失，说明 TAURI_SIGNING_PRIVATE_KEY / PASSWORD 未配置或为空，
+          # 此时 tauri-action 只上传安装包本体，不产出 .sig 与 latest.json。
+          if ! gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "latest.json"; then
+            echo "::error::latest.json not found in release $TAG."
+            echo "::error::This means the updater was NOT signed — check secrets:"
+            echo "::error::  TAURI_SIGNING_PRIVATE_KEY / TAURI_SIGNING_PRIVATE_KEY_PASSWORD"
+            echo "Available assets in release:"
+            gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets \
+              --jq '.assets[].name'
+            exit 1
+          fi
+
+          # 按 latest.json 实际引用的文件名逐个下载（只信清单引用）
           mapfile -t ASSETS < <(jq -r '.platforms[].url | split("/") | .[-1]' latest.json | awk '!s[$0]++')
           for f in "${ASSETS[@]}"; do
             gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$f"
