@@ -1,0 +1,233 @@
+name: Release
+
+# 构建 Tiny Reader 发布版本：
+#   - 服务端：Linux x86_64（服务端只要 linux 版本）
+#   - 客户端：Windows x86_64 + macOS universal（客户端只要 windows/mac 版本）
+#   - Tauri 更新器签名 latest.json
+#   - 更新通道与安装包同步到腾讯云 COS，供国内用户走 CDN 更新
+#
+# 触发：
+#   1. 推送 v* 标签 → 自动构建并发布 Release
+#   2. Actions 页面手动运行 (workflow_dispatch)，需指定 tag
+#
+# 必需的 GitHub Secrets（Settings → Secrets and variables → Actions）：
+#   TAURI_SIGNING_PRIVATE_KEY          # 更新器签名私钥内容（base64 字符串，由 tauri signer generate 生成）
+#   TAURI_SIGNING_PRIVATE_KEY_PASSWORD # 生成私钥时设置的密码
+#
+# 腾讯云 COS（构建产物 + 更新通道）：
+#   COS_BUCKET        # COS bucket 名称，例如 tiny-reader-1250000000
+#   COS_REGION        # COS 地域，例如 ap-guangzhou
+#   COS_SECRET_ID     # 腾讯云 API 密钥 ID
+#   COS_SECRET_KEY    # 腾讯云 API 密钥 Key
+#   UPDATER_CDN_BASE  # 更新通道根地址，例如 https://tiny-reader-1250000000.cos.ap-guangzhou.myqcloud.com
+#                     # 须与 tauri.conf.json 的 plugins.updater.endpoints 前缀一致
+#
+# 可选（macOS 代码签名/公证；不配置则 ad-hoc 签名，产物可用但触发 Gatekeeper 提示）：
+#   APPLE_CERTIFICATE / APPLE_CERTIFICATE_PASSWORD / APPLE_SIGNING_IDENTITY
+#   APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID
+#   注：更新器签名与 Apple 签名相互独立，不配 Apple 证书不影响应用内自动更新。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag (e.g. v0.1.0)'
+        required: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_REGISTRIES_CRATES_IO_PROTOCOL: sparse
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ========== 服务端：仅 Linux ==========
+  build-server:
+    name: Build Server (linux-x86_64)
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: server -> target
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libssl-dev
+
+      - name: Bump version from tag
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          # 服务端版本写入 server/Cargo.toml（仅改内存中的工作副本，不回写 git）
+          sed -i -E "0,/^version[[:space:]]*=/s/^(version[[:space:]]*=[[:space:]]*\")[0-9]+\.[0-9]+\.[0-9]+(\")/\1${VERSION}\2/" server/Cargo.toml
+          grep -m1 '^version' server/Cargo.toml
+
+      - name: Build server
+        run: cargo build --release --manifest-path server/Cargo.toml
+
+      - name: Package server
+        run: |
+          mkdir -p dist
+          cp server/target/release/tiny-reader-server dist/
+          cp server/config.example.toml dist/
+          cd dist
+          tar -czf tiny-reader-server-linux-x86_64.tar.gz tiny-reader-server config.example.toml
+
+      - name: Upload server to GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          gh release upload "$TAG" dist/tiny-reader-server-linux-x86_64.tar.gz \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+  # ========== 客户端：Windows + macOS ==========
+  release:
+    name: Build Client (${{ matrix.name }})
+    permissions:
+      contents: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            name: windows-x86_64
+            rust_targets: ''
+            args: ''
+          - os: macos-latest
+            name: macos-universal
+            rust_targets: aarch64-apple-darwin,x86_64-apple-darwin
+            args: '--target universal-apple-darwin'
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_targets }}
+
+      - name: Rust cache
+        uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+          key: ${{ matrix.name }}
+
+      - name: Install frontend dependencies
+        run: npm ci
+
+      - name: Bump version from tag
+        # 根据发布标签注入版本号，使 latest.json 的 version 与标签一致，
+        # 更新器才能正确判断版本。仅在 CI 内改写，不回写 git，源码保持不动。
+        shell: bash
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          node scripts/bump_version.js "$VERSION"
+
+      - name: Build and publish
+        uses: tauri-apps/tauri-action@v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Tauri 更新器签名：生成各平台 .sig 并聚合为 latest.json
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+          CARGO_INCREMENTAL: '0'
+        with:
+          tagName: ${{ github.event.inputs.tag || github.ref_name }}
+          releaseName: 'Tiny Reader ${{ github.event.inputs.tag || github.ref_name }}'
+          releaseDraft: false
+          prerelease: false
+          generateReleaseNotes: true
+          updaterJsonPreferNsis: true
+          args: ${{ matrix.args }}
+
+  # ========== 更新通道 + 安装包同步到腾讯云 COS ==========
+  sync-cos:
+    needs: release
+    permissions:
+      contents: read
+    runs-on: ubuntu-22.04
+    steps:
+      - name: Download release assets from GitHub
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          mkdir -p cos-assets && cd cos-assets
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "latest.json"
+          # 按 latest.json 实际引用的文件名逐个下载（只信清单引用，兼容 Tauri 2.x 直接产出本体的形态）
+          mapfile -t ASSETS < <(jq -r '.platforms[].url | split("/") | .[-1]' latest.json | awk '!s[$0]++')
+          for f in "${ASSETS[@]}"; do
+            gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$f"
+            echo "downloaded: $f"
+          done
+
+      - name: Rewrite latest.json to COS CDN
+        env:
+          UPDATER_CDN_BASE: ${{ secrets.UPDATER_CDN_BASE }}
+        run: |
+          cd cos-assets
+          jq --arg base "${UPDATER_CDN_BASE%/}" \
+             '.platforms |= map_values(.url = ($base + "/" + (.url | split("/") | .[-1])))' \
+             latest.json > .tmp && mv .tmp latest.json
+          echo "Rewrote latest.json URLs to $UPDATER_CDN_BASE"
+
+      - name: Sync updater artifacts to Tencent COS
+        # runner 预装 AWS CLI v2，直接对接腾讯云 COS（S3 兼容），无需 pip 安装。
+        # virtual-hosted-style：COS 禁用 path-style（否则 PathStyleDomainForbidden）。
+        # payload_signing_enabled=false：COS 严格要求 Content-Length，
+        # 而 CLI v2 分片上传默认 aws-chunked 流式签名不带该头（MissingContentLength）。
+        env:
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
+          COS_REGION: ${{ secrets.COS_REGION }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+        run: |
+          aws configure set aws_access_key_id "$COS_SECRET_ID"
+          aws configure set aws_secret_access_key "$COS_SECRET_KEY"
+          aws configure set region "$COS_REGION"
+          aws configure set s3.addressing_style virtual
+          aws configure set s3.payload_signing_enabled false
+          # 跨太平洋链路慢，降并发 + 重试兜 COS 专有的 UserNetworkTooSlow
+          aws configure set s3.max_concurrent_requests 2
+          aws configure set default.retry_mode standard
+          aws configure set default.max_attempts 8
+          EP="https://cos.$COS_REGION.myqcloud.com"
+          MAX_RETRIES=5
+          for i in $(seq 1 "$MAX_RETRIES"); do
+            if aws s3 sync cos-assets "s3://$COS_BUCKET" --endpoint-url "$EP"; then
+              echo "Sync succeeded on attempt $i."
+              break
+            fi
+            echo "Sync attempt $i failed."
+            if [ "$i" -eq "$MAX_RETRIES" ]; then
+              echo "ERROR: sync failed after $MAX_RETRIES attempts."
+              exit 1
+            fi
+            SLEEP=$((i * i * 5))
+            echo "Retrying in ${SLEEP}s..."
+            sleep "$SLEEP"
+          done
+          echo "Synced updater artifacts to COS."

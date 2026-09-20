@@ -41,6 +41,7 @@ fn app_info() -> AppInfo {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .invoke_handler(tauri::generate_handler![open_url, app_info])
         .run(tauri::generate_context!())
         .expect("failed to launch Tiny Reader");
