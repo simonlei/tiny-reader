@@ -1,7 +1,9 @@
 name: Release
 
 # 构建 Tiny Reader 发布版本：
-#   - 服务端：Linux x86_64（服务端只要 linux 版本）
+#   - 服务端：Linux x86_64 musl 静态编译（服务端只要 linux 版本）
+#             用 musl 静态链接而非 glibc，产物不依赖目标机器 glibc 版本，
+#             避免在 Ubuntu 24.04 编译、旧发行版运行报 GLIBC_2.xx not found。
 #   - 客户端：Windows x86_64 + macOS universal（客户端只要 windows/mac 版本）
 #   - Tauri 更新器签名 latest.json
 #   - 更新通道与安装包同步到腾讯云 COS，供国内用户走 CDN 更新
@@ -55,16 +57,21 @@ jobs:
 
       - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
 
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: server -> target
+          key: linux-musl
 
-      - name: Install system dependencies
+      - name: Install musl tools
+        # musl-gcc 用于静态链接；reqwest 用 rustls-tls、rusqlite 用 bundled，
+        # 均不依赖系统 OpenSSL/SQLite，musl 下可直接静态编译。
         run: |
           sudo apt-get update
-          sudo apt-get install -y pkg-config libssl-dev
+          sudo apt-get install -y musl-tools pkg-config
 
       - name: Bump version from tag
         shell: bash
@@ -75,23 +82,25 @@ jobs:
           sed -i -E "0,/^version[[:space:]]*=/s/^(version[[:space:]]*=[[:space:]]*\")[0-9]+\.[0-9]+\.[0-9]+(\")/\1${VERSION}\2/" server/Cargo.toml
           grep -m1 '^version' server/Cargo.toml
 
-      - name: Build server
-        run: cargo build --release --manifest-path server/Cargo.toml
+      - name: Build server (musl static)
+        # 静态链接 musl，产物不依赖目标机器的 glibc 版本，
+        # 避免在新发行版编译、旧发行版运行时报 GLIBC_2.xx not found。
+        run: cargo build --release --target x86_64-unknown-linux-musl --manifest-path server/Cargo.toml
 
       - name: Package server
         run: |
           mkdir -p dist
-          cp server/target/release/tiny-reader-server dist/
+          cp server/target/x86_64-unknown-linux-musl/release/tiny-reader-server dist/
           cp server/config.example.toml dist/
           cd dist
-          tar -czf tiny-reader-server-linux-x86_64.tar.gz tiny-reader-server config.example.toml
+          tar -czf tiny-reader-server-linux-x86_64-musl.tar.gz tiny-reader-server config.example.toml
 
       - name: Upload server to GitHub Release
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
-          gh release upload "$TAG" dist/tiny-reader-server-linux-x86_64.tar.gz \
+          gh release upload "$TAG" dist/tiny-reader-server-linux-x86_64-musl.tar.gz \
             --repo "$GITHUB_REPOSITORY" --clobber
 
   # ========== 客户端：Windows + macOS ==========
