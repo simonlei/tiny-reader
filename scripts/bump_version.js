@@ -6,13 +6,15 @@
  *   - src-tauri/Cargo.toml   (only the [package] version line)
  *
  * 用于 CI：根据发布标签注入版本号，无需本地提交版本号变更。
- * Node 跨平台，在 GitHub Actions 的 Windows/macOS/Linux runner 上均可运行。
+ * 使用 ESM 语法：项目 package.json 含 "type": "module"，
+ * .js 会被当作 ES module，不能用 require()。
  *
  * 用法:
  *   node scripts/bump_version.js 0.1.1
  */
-const fs = require('fs');
-const path = require('path');
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 const version = process.argv[2];
 if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
@@ -20,6 +22,8 @@ if (!version || !/^\d+\.\d+\.\d+$/.test(version)) {
   process.exit(1);
 }
 
+// ESM 下没有 __dirname，从 import.meta.url 推导项目根目录
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 
 function bumpJson(rel) {

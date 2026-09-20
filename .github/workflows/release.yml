@@ -46,8 +46,11 @@ env:
 
 jobs:
   # ========== 服务端：仅 Linux ==========
+  # 依赖 release：服务端要上传到 GitHub Release，必须等 Release 实体先建好，
+  # 否则 gh release upload 报 "release not found"。
   build-server:
     name: Build Server (linux-x86_64)
+    needs: release
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -173,8 +176,9 @@ jobs:
           args: ${{ matrix.args }}
 
   # ========== 更新通道 + 安装包同步到腾讯云 COS ==========
+  # 需同时等 release（客户端产物 + latest.json）和 build-server（服务端包）。
   sync-cos:
-    needs: release
+    needs: [release, build-server]
     permissions:
       contents: read
     runs-on: ubuntu-22.04
