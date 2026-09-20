@@ -6,6 +6,10 @@ target/
 
 # tauri-build 生成的 schema，不必入库
 src-tauri/gen/
+
+# Tauri 更新器签名密钥（私钥绝不能入库，公钥可提交）
+src-tauri/keys/*.key
+!src-tauri/keys/*.key.pub
 *.log
 .DS_Store
 Thumbs.db
