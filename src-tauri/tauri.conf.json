@@ -31,7 +31,7 @@
     "updater": {
       "active": true,
       "endpoints": [
-        "https://tiny-reader-1250000000.cos.ap-guangzhou.myqcloud.com/latest.json"
+        "https://tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com/latest.json"
       ],
       "dialog": false,
       "windows": {
