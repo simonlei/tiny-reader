@@ -168,9 +168,9 @@ jobs:
           # 直接导出供下一步组装 Gradle 参数，不再依赖 env 上下文（
           # GITHUB_ENV 变量无法在同 job 的 env: 块中通过 env. 读取）。
           echo "args=-PRELEASE_STORE_FILE=$RUNNER_TEMP/tinyreader.jks \
--PRELEASE_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }} \
--PRELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }} \
--PRELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_OUTPUT"
+                -PRELEASE_STORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }} \
+                -PRELEASE_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }} \
+                -PRELEASE_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> "$GITHUB_OUTPUT"
           echo "gradle_args_ready=1" >> "$GITHUB_OUTPUT"
           echo "keystore decoded, size=$(stat -c%s "$RUNNER_TEMP/tinyreader.jks") bytes"
 
