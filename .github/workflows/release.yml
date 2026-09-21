@@ -248,15 +248,17 @@ jobs:
             exit 1
           fi
           ls -lh "$APK"
-          # 未签名 APK 加 -unsigned 后缀，避免和签名包混淆
+          # 未签名 APK 加 -unsigned 后缀，避免和签名包混淆。
+          # 注意：源文件名必须用 $APK（上面 find 的结果），
+          # 之前误写成 $OUT（该变量从未定义），导致 mv: cannot stat ''。
           if [ -n "${{ steps.keystore.outputs.gradle_args_ready }}" ]; then
             SIGNED_OUT="tiny-reader-android-${{ github.event.inputs.tag || github.ref_name }}.apk"
-            mv "$OUT" "$SIGNED_OUT"
+            mv "$APK" "$SIGNED_OUT"
             echo "name=$SIGNED_OUT" >> "$GITHUB_OUTPUT"
             echo "note=signed" >> "$GITHUB_OUTPUT"
           else
             UNSIGNED_OUT="tiny-reader-android-${{ github.event.inputs.tag || github.ref_name }}-unsigned.apk"
-            mv "$OUT" "$UNSIGNED_OUT"
+            mv "$APK" "$UNSIGNED_OUT"
             echo "name=$UNSIGNED_OUT" >> "$GITHUB_OUTPUT"
             echo "note=unsigned" >> "$GITHUB_OUTPUT"
           fi
