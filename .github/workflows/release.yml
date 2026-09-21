@@ -161,7 +161,34 @@ jobs:
           java-version: '17'
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        # 不用 android-actions/setup-android：该 action 内部会执行
+        # sdkmanager --install "tools"，而 Google 早已把旧的 "tools" 包
+        # 从仓库移除（拆分为 cmdline-tools），导致
+        #   "Failed to find package 'tools'" -> sdkmanager exit 1。
+        # ubuntu runner 已预装 SDK（/usr/local/lib/android/sdk）与
+        # cmdline-tools 16.0，直接复用即可，只需补装项目真正需要的组件。
+        shell: bash
+        run: |
+          set -euo pipefail
+          # 不依赖 ANDROID_HOME 是否已导出，显式指定 runner 预装的 SDK 路径。
+          export ANDROID_HOME=/usr/local/lib/android/sdk
+          export ANDROID_SDK_ROOT="$ANDROID_HOME"
+          export PATH="$ANDROID_HOME/cmdline-tools/latest/bin:$ANDROID_HOME/cmdline-tools/16.0/bin:$ANDROID_HOME/platform-tools:$PATH"
+          echo "ANDROID_HOME=$ANDROID_HOME"
+          command -v sdkmanager
+
+          # 接受 licenses，避免构建时卡在交互确认
+          yes | sdkmanager --licenses >/dev/null || true
+
+          # 只装 compileSdk 35 / targetSdk 35 与对应 build-tools。
+          # 注意：绝不要装 "tools"，该包已不存在。
+          sdkmanager --install "platform-tools" "platforms;android-35" "build-tools;35.0.0"
+
+          sdkmanager --list_installed | head -20
+
+          # 显式写 local.properties，保证 Gradle 定位到 runner 的 SDK。
+          # 该文件已被 android/.gitignore 忽略，不会回传仓库。
+          echo "sdk.dir=$ANDROID_HOME" > android/local.properties
 
       - name: Gradle cache
         # Gradle 依赖缓存。key 含 gradle 文件哈希，依赖变更自动失效。
