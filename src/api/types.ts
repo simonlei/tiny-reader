@@ -35,6 +35,8 @@ export interface ArticlePage {
   total: number
   offset: number
   limit: number
+  /** 下一页游标；为 null/undefined 表示没有更多数据 */
+  next_cursor?: { before_time: string; before_id: number } | null
 }
 
 export interface Stats {

@@ -44,12 +44,20 @@ data class Article(
     @SerialName("feed_site_url") val feedSiteUrl: String? = null,
 )
 
+/** 下一页游标，对应服务端 next_cursor；null 表示没有更多 */
+@Serializable
+data class Cursor(
+    @SerialName("before_time") val beforeTime: String = "",
+    @SerialName("before_id") val beforeId: Long = 0,
+)
+
 @Serializable
 data class ArticlePage(
     val items: List<Article> = emptyList(),
     val total: Int = 0,
     val offset: Int = 0,
     val limit: Int = 0,
+    @SerialName("next_cursor") val nextCursor: Cursor? = null,
 )
 
 @Serializable

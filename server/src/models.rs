@@ -76,6 +76,12 @@ pub struct ArticleQuery {
     pub limit: i64,
     pub offset: i64,
     pub keyword: Option<String>,
+    /// 游标分页：上一页最后一条的排序时间（COALESCE(published_at, fetched_at)）。
+    /// 传了它就用 keyset 分页，忽略 offset。未读模式下结果集会随阅读收缩，
+    /// offset 分页会跳过文章，必须靠游标保证稳定。
+    pub before_time: Option<String>,
+    /// 游标分页：上一页最后一条的 id，与 before_time 配对用于打破同时间平局
+    pub before_id: Option<i64>,
 }
 
 impl Default for ArticleQuery {
@@ -87,6 +93,8 @@ impl Default for ArticleQuery {
             limit: 50,
             offset: 0,
             keyword: None,
+            before_time: None,
+            before_id: None,
         }
     }
 }

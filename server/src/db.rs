@@ -292,11 +292,28 @@ impl Db {
                 params.push(Box::new(like));
             }
         }
+        // 游标（keyset）分页：只取"排在上一页最后一条之后"的记录。
+        // 未读过滤下结果集随阅读不断收缩，OFFSET 会跳过中间条目，
+        // 因此只要客户端传了 before_time 就一律走 keyset，忽略 offset。
+        let use_cursor = q.before_time.is_some();
+        if use_cursor {
+            sql.push_str(
+                " AND (COALESCE(a.published_at, a.fetched_at) < ? \
+                 OR (COALESCE(a.published_at, a.fetched_at) = ? AND a.id < ?))",
+            );
+            let t = q.before_time.clone().unwrap_or_default();
+            params.push(Box::new(t.clone()));
+            params.push(Box::new(t));
+            params.push(Box::new(q.before_id.unwrap_or(i64::MAX)));
+        }
         sql.push_str(
-            " ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC LIMIT ? OFFSET ?",
+            " ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC LIMIT ?",
         );
         params.push(Box::new(q.limit));
-        params.push(Box::new(q.offset));
+        if !use_cursor {
+            sql.push_str(" OFFSET ?");
+            params.push(Box::new(q.offset));
+        }
 
         let mut stmt = conn.prepare(&sql)?;
         let rows = stmt

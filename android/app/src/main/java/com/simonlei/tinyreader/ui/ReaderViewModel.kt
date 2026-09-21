@@ -7,6 +7,7 @@ import com.simonlei.tinyreader.data.ApiClient
 import com.simonlei.tinyreader.data.ApiError
 import com.simonlei.tinyreader.data.Article
 import com.simonlei.tinyreader.data.ArticleFilter
+import com.simonlei.tinyreader.data.Cursor
 import com.simonlei.tinyreader.data.Feed
 import com.simonlei.tinyreader.data.RefreshStatus
 import com.simonlei.tinyreader.data.SettingsStore
@@ -56,14 +57,17 @@ data class UiState(
     val toast: String? = null,
 
     /**
-     * 上一页是否返回了满页。
-     * 未读过滤器下服务端 total 会随已读递减，不能用 articles.size 和 total 比，
-     * 否则读到一半会误判"到底了"。
+     * 下一页游标（服务端下发）。
+     * 未读过滤下结果集随阅读收缩，OFFSET 分页会跳过文章，必须用 keyset 游标。
+     * 为 null 表示没有更多。
      */
+    val cursor: Cursor? = null,
+
+    /** 上一页是否返回满页，仅作兜底显示用 */
     val lastPageFull: Boolean = false,
 ) {
-    /** 是否还有下一页：只看上一页是否满页，不受已读导致的 total 递减影响 */
-    val hasMore: Boolean get() = lastPageFull
+    /** 是否还有下一页：以服务端游标为准，不受已读导致的 total 递减影响 */
+    val hasMore: Boolean get() = cursor != null
 
     val selectedIndex: Int get() = articles.indexOfFirst { it.id == selectedId }
 
@@ -156,13 +160,14 @@ class ReaderViewModel : ViewModel() {
 
         try {
             val cur = _ui.value
-            val offset = if (reset) 0 else cur.articles.size
             val page = ApiClient.listArticles(
                 feedId = cur.selectedFeedId,
                 filter = cur.filter,
                 limit = PAGE_SIZE,
-                offset = offset,
+                // 未读模式下结果集随阅读收缩，OFFSET 会跳过文章，统一用游标翻页
+                offset = 0,
                 keyword = cur.keyword.trim().ifBlank { null },
+                cursor = if (reset) null else cur.cursor,
             )
             _ui.update { s ->
                 val merged: List<Article>
@@ -182,7 +187,8 @@ class ReaderViewModel : ViewModel() {
                     articles = merged,
                     selectedId = selected,
                     total = page.total,
-                    // 只有返回满页才认为后面还有；空页 / 不满页说明到末尾了
+                    // 服务端权威游标：非空表示还有下一页
+                    cursor = page.nextCursor,
                     lastPageFull = page.items.size >= PAGE_SIZE,
                     error = "",
                     connected = true,

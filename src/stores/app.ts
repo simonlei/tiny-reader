@@ -36,10 +36,13 @@ export const state = reactive({
   } as RefreshStatus,
 
   /**
-   * 上一页是否返回了满页。
-   * 未读过滤器下服务端 total 会随已读递减，不能直接拿 articles.length 和 total 比，
-   * 否则读到一半就会误判"到底了"。改为：只要上一次请求返回满页，就认为还有下一页。
+   * 下一页游标（服务端下发）。
+   * 未读模式下结果集会随阅读收缩，offset 分页必然跳过文章，
+   * 必须用 keyset 游标翻页。为 null 表示没有更多。
    */
+  cursor: null as { before_time: string; before_id: number } | null,
+
+  /** 上一页是否返回满页，仅作兜底 */
   lastPageFull: false,
 })
 
@@ -54,11 +57,11 @@ export const selectedArticle = computed<Article | null>(
 )
 
 /**
- * 是否还有下一页。
- * 注意：不能写 articles.length < total —— 未读过滤器下 total 是「当前剩余未读数」，
- * 会随着阅读递减，而 articles 只增不减，两者会在中途交叉导致提前显示"到底了"。
+ * 是否还有下一页：以服务端下发的游标为准。
+ * 不能写 articles.length < total —— 未读过滤器下 total 是「当前剩余未读数」，
+ * 会随阅读递减，而 articles 只增不减，两者中途交叉会提前显示"到底了"。
  */
-export const hasMore = computed(() => state.lastPageFull)
+export const hasMore = computed(() => state.cursor != null)
 
 export const currentFeedTitle = computed(() => {
   if (state.selectedFeedId == null) return '全部文章'
@@ -111,12 +114,13 @@ export async function loadArticles(reset = true) {
   }
 
   try {
-    const offset = reset ? 0 : state.articles.length
     const page = await api.listArticles({
       feedId: state.selectedFeedId,
       filter: state.filter,
       limit: PAGE_SIZE,
-      offset,
+      // 翻页用游标：offset 在结果集随阅读收缩时会跳过文章
+      offset: 0,
+      cursor: reset ? null : state.cursor,
       keyword: state.keyword.trim() || undefined,
     })
     if (reset) {
@@ -130,7 +134,9 @@ export async function loadArticles(reset = true) {
       state.articles.push(...page.items.filter((a) => !known.has(a.id)))
       if (state.selectedId == null) state.selectedId = state.articles[0]?.id ?? null
     }
-    // 只有返回满页才认为后面还有；空页 / 不满页说明到末尾了
+    // 服务端权威游标：非空表示还有下一页。未读模式下结果集会收缩，
+    // 不能靠 offset/articles.length 推算，必须以服务端下发的游标为准。
+    state.cursor = page.next_cursor ?? null
     state.lastPageFull = page.items.length >= PAGE_SIZE
     state.total = page.total
     state.error = ''

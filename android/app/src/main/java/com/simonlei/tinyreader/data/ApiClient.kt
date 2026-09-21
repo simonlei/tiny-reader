@@ -161,6 +161,7 @@ object ApiClient {
         limit: Int,
         offset: Int,
         keyword: String?,
+        cursor: Cursor? = null,
     ): ArticlePage {
         val q = queryOf(
             listOf(
@@ -170,6 +171,8 @@ object ApiClient {
                 "limit" to limit,
                 "offset" to offset,
                 "q" to keyword,
+                "before_time" to cursor?.beforeTime,
+                "before_id" to cursor?.beforeId,
             )
         )
         return json.decodeFromString(raw("/api/articles$q"))

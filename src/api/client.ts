@@ -152,6 +152,7 @@ export function listArticles(opts: {
   limit?: number
   offset?: number
   keyword?: string
+  cursor?: { before_time: string; before_id: number } | null
 }): Promise<ArticlePage> {
   return request<ArticlePage>(
     `/api/articles${query({
@@ -161,6 +162,8 @@ export function listArticles(opts: {
       limit: opts.limit,
       offset: opts.offset,
       q: opts.keyword,
+      before_time: opts.cursor?.before_time,
+      before_id: opts.cursor?.before_id,
     })}`,
   )
 }

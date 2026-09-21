@@ -482,6 +482,12 @@ struct ArticleParams {
     offset: i64,
     #[serde(default)]
     q: Option<String>,
+    /// 游标分页：上一页最后一条的排序时间
+    #[serde(default)]
+    before_time: Option<String>,
+    /// 游标分页：上一页最后一条的 id
+    #[serde(default)]
+    before_id: Option<i64>,
 }
 
 fn default_limit() -> i64 {
@@ -500,6 +506,8 @@ async fn list_articles(
         limit,
         offset: p.offset.max(0),
         keyword: p.q,
+        before_time: p.before_time,
+        before_id: p.before_id,
     };
     let items = st
         .db
@@ -509,12 +517,28 @@ async fn list_articles(
         .db
         .count_articles(&q)
         .map_err(|e| AppError::internal(e.to_string()))?;
+    // 把本页最后一条的排序键回传，客户端下一页原样带回即可，无需自己算 offset
+    let next_cursor = items.last().map(|a| Cursor {
+        before_time: a
+            .published_at
+            .or(Some(a.fetched_at))
+            .map(|t| t.to_rfc3339())
+            .unwrap_or_default(),
+        before_id: a.id,
+    });
     Ok(Json(ArticlePage {
         items,
         total,
         offset: q.offset,
         limit,
+        next_cursor,
     }))
+}
+
+#[derive(Debug, Serialize)]
+struct Cursor {
+    before_time: String,
+    before_id: i64,
 }
 
 #[derive(Debug, Serialize)]
@@ -523,6 +547,9 @@ struct ArticlePage {
     total: i64,
     offset: i64,
     limit: i64,
+    /// 下一页游标；为 null 表示已经没有更多数据
+    #[serde(skip_serializing_if = "Option::is_none")]
+    next_cursor: Option<Cursor>,
 }
 
 async fn get_article(
