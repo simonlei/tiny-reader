@@ -13,8 +13,25 @@ android {
         applicationId = "com.simonlei.tinyreader"
         minSdk = 26
         targetSdk = 35
-        versionCode = 1
+        // versionCode 必须单调递增。本地默认 1；CI 通过
+        // ORG_GRADLE_PROJECT_versionCode 注入 github.run_number
+        //（Gradle 会自动把该前缀的环境变量映射为 project property）。
+        versionCode = (project.findProperty("versionCode") as String? ?: "1").toInt()
         versionName = "0.1.0"
+    }
+
+    // 签名配置：本地无 keystore 时保持未设置；
+    // CI 传入 keystore 路径与口令后即可产出已签名的 release 包。
+    signingConfigs {
+        create("release") {
+            val ksPath = project.findProperty("RELEASE_STORE_FILE") as String?
+            if (!ksPath.isNullOrBlank()) {
+                storeFile = file(ksPath)
+                storePassword = project.findProperty("RELEASE_STORE_PASSWORD") as String?
+                keyAlias = project.findProperty("RELEASE_KEY_ALIAS") as String?
+                keyPassword = project.findProperty("RELEASE_KEY_PASSWORD") as String?
+            }
+        }
     }
 
     buildTypes {
@@ -22,6 +39,11 @@ android {
             applicationIdSuffix = ".debug"
         }
         release {
+            // 仅在 keystore 配置到位时挂签名，缺失则退化为未签名包，不阻断构建。
+            val ksPath = project.findProperty("RELEASE_STORE_FILE") as String?
+            if (!ksPath.isNullOrBlank()) {
+                signingConfig = signingConfigs.getByName("release")
+            }
             isMinifyEnabled = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),

@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Bump version across the three version sources:
+ * Bump version across the version sources:
  *   - package.json
  *   - src-tauri/tauri.conf.json
  *   - src-tauri/Cargo.toml   (only the [package] version line)
+ *   - android/app/build.gradle.kts (versionName)
  *
  * 用于 CI：根据发布标签注入版本号，无需本地提交版本号变更。
  * 使用 ESM 语法：项目 package.json 含 "type": "module"，
@@ -49,3 +50,16 @@ if (!cargoRe.test(cargo)) {
 cargo = cargo.replace(cargoRe, `version = "${version}"`);
 fs.writeFileSync(cargoPath, cargo);
 console.log(`src-tauri/Cargo.toml: -> ${version}`);
+
+// 安卓端 versionName。versionCode 由 CI 用 run_number 注入（必须单调递增，
+// 且与发布次数挂钩），不在这里处理。
+const gradlePath = path.join(root, 'android/app/build.gradle.kts');
+let gradle = fs.readFileSync(gradlePath, 'utf8');
+const gradleRe = /versionName\s*=\s*"[^"]+"/;
+if (!gradleRe.test(gradle)) {
+  console.error('ERROR: could not find versionName in android/app/build.gradle.kts');
+  process.exit(1);
+}
+gradle = gradle.replace(gradleRe, `versionName = "${version}"`);
+fs.writeFileSync(gradlePath, gradle);
+console.log(`android/app/build.gradle.kts: -> ${version}`);
