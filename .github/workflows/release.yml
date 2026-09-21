@@ -51,12 +51,40 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
+  # ========== 第一步：只建 Release 实体 ==========
+  # 原先 Release 由 tauri-action（release job）顺带创建，导致 build-server /
+  # build-android 必须 needs: release，而 release 是 win+mac 的 matrix，
+  # 会被迫等两个平台全部构建完。把实体创建独立出来后，三者可真正并行。
+  create-release:
+    name: Create Release
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.vars.outputs.tag }}
+    steps:
+      - name: Resolve tag
+        id: vars
+        run: echo "tag=${{ github.event.inputs.tag || github.ref_name }}" >> "$GITHUB_OUTPUT"
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="${{ steps.vars.outputs.tag }}"
+          # 幂等：重复运行时若已存在则直接跳过，避免并发/重跑报错
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $TAG already exists, skipping create"
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" \
+              --title "Tiny Reader $TAG" --generate-notes
+          fi
+
   # ========== 服务端：仅 Linux ==========
-  # 依赖 release：服务端要上传到 GitHub Release，必须等 Release 实体先建好，
-  # 否则 gh release upload 报 "release not found"。
+  # 只依赖 create-release：上传需要 Release 实体存在，但不必等客户端构建完。
   build-server:
     name: Build Server (linux-x86_64)
-    needs: release
+    needs: create-release
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -113,11 +141,10 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --clobber
 
   # ========== 客户端：Android APK ==========
-  # 依赖 release：APK 要上传到 GitHub Release，必须等 Release 实体先建好，
-  # 否则 gh release upload 报 "release not found"（与 build-server 同理）。
+  # 只依赖 create-release：上传需要 Release 实体存在，但不必等 win/mac 构建完。
   build-android:
     name: Build Client (android)
-    needs: release
+    needs: create-release
     permissions:
       contents: write
     runs-on: ubuntu-latest
@@ -216,8 +243,11 @@ jobs:
             --repo "$GITHUB_REPOSITORY" --clobber
 
   # ========== 客户端：Windows + macOS ==========
+  # 只依赖 create-release：Release 实体已建好，tauri-action 直接上传产物，
+  # 不再需要服务端/Android 排在 win+mac 之后。
   release:
     name: Build Client (${{ matrix.name }})
+    needs: create-release
     permissions:
       contents: write
     strategy:
@@ -334,11 +364,13 @@ jobs:
           # 此处自动继承（同名环境变量会覆盖 job 级定义）。
           CARGO_INCREMENTAL: '0'
         with:
-          tagName: ${{ github.event.inputs.tag || github.ref_name }}
-          releaseName: 'Tiny Reader ${{ github.event.inputs.tag || github.ref_name }}'
+          # Release 实体已由 create-release 建好，此处只上传产物。
+          # 关键是 releaseId：tauri-action 识别到后会跳过创建，直接上传。
+          tagName: ${{ needs.create-release.outputs.tag }}
+          releaseName: 'Tiny Reader ${{ needs.create-release.outputs.tag }}'
           releaseDraft: false
           prerelease: false
-          generateReleaseNotes: true
+          generateReleaseNotes: false
           updaterJsonPreferNsis: true
           args: ${{ matrix.args }}
 
@@ -356,9 +388,10 @@ jobs:
           find src-tauri/target -path '*bundle*' -maxdepth 4 -type d 2>/dev/null | head -20 || true
 
   # ========== 更新通道 + 安装包同步到腾讯云 COS ==========
-  # 需同时等 release（客户端产物 + latest.json）和 build-server（服务端包）。
+  # 只需等 release：latest.json 由 tauri-action 产出，且只引用桌面端产物。
+  # 服务端包不在 latest.json 的 platforms 里，也不需同步 COS，故不依赖 build-server。
   sync-cos:
-    needs: [release, build-server]
+    needs: release
     permissions:
       contents: read
     runs-on: ubuntu-22.04
