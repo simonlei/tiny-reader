@@ -308,6 +308,11 @@ export async function addFeed(url: string, title?: string, category?: string) {
   return feed
 }
 
+/** 用 RSSHub Radar 探测某个网页地址可用的订阅路由 */
+export async function discoverFeeds(url: string) {
+  return await api.discoverFeeds(url)
+}
+
 export async function updateFeed(id: number, patch: { url?: string; title?: string; category?: string }) {
   const feed = await api.updateFeed(id, patch)
   await loadFeeds()

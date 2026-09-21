@@ -131,8 +131,32 @@ cd android
 | `refresh.concurrency` | 刷新时的并发数 |
 | `refresh.timeout_secs` | 单个请求超时 |
 | `refresh.auto_interval_secs` | 定时自动刷新间隔（秒），`0` 表示只在点「刷新」时拉取 |
+| `rsshub.base_url` | 自部署 RSSHub 实例地址，留空 = 关闭 RSSHub 支持 |
+| `rsshub.timeout_secs` | 拉取 RSSHub 路由的超时（秒），实时抓取比普通 RSS 慢，默认 60 |
+| `rsshub.radar_cache_secs` | Radar 规则缓存有效期（秒），默认 12 小时 |
 
-环境变量：`TINY_READER_CONFIG`（配置文件路径）、`TINY_READER_TOKEN`、`TINY_READER_HOST`、`TINY_READER_PORT`、`TINY_READER_DB`。
+环境变量：`TINY_READER_CONFIG`（配置文件路径）、`TINY_READER_TOKEN`、`TINY_READER_HOST`、`TINY_READER_PORT`、`TINY_READER_DB`、`TINY_READER_RSSHUB`。
+
+### 用 RSSHub 订阅不支持 RSS 的站点
+
+先部署一个 RSSHub 实例，然后在 `config.toml` 里配上：
+
+```toml
+[rsshub]
+base_url = "http://127.0.0.1:1200"
+```
+
+配置后，添加订阅源时**直接粘贴任意网页地址**，服务端会用 RSSHub 的 Radar 规则
+（实例上的 `/api/radar/rules`）自动找出可用路由并列出候选，选一个即可订阅。
+
+也可以手动填 RSSHub 路由：
+
+```
+rsshub://zhihu/daily
+```
+
+库里存的是这种逻辑地址而不是展开后的 URL，所以**换了 RSSHub 实例只需改配置，
+不用改已有的订阅源**。
 
 ## 快捷键
 
@@ -170,6 +194,7 @@ X-Auth-Token: <token>
 | PUT | `/api/feeds/{id}` | 修改 url / title / category |
 | DELETE | `/api/feeds/{id}` | 删除订阅源及其文章 |
 | POST | `/api/feeds/{id}/refresh` | 只刷新这一个源 |
+| POST | `/api/feeds/discover` | 为一个网页地址查找可用的 RSSHub 路由（Radar），body `{url}` |
 | GET | `/api/feeds/export` | 导出 OPML |
 | POST | `/api/feeds/import` | 导入 OPML（JSON `{opml, fetch_now}` 或裸 XML） |
 | GET | `/api/articles` | 文章列表，支持 `feed_id` / `unread_only` / `starred_only` / `limit` / `offset` / `q` |

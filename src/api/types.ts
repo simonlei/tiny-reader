@@ -79,4 +79,19 @@ export interface ImportResult {
   skipped: number
 }
 
+/** RSSHub Radar 命中出来的一条候选路由 */
+export interface RssCandidate {
+  title: string
+  /** RSSHub 路由，例如 /zhihu/people/pins/simonlei */
+  route: string
+  /** 可直接存进 feeds.url 的形态，例如 rsshub://zhihu/people/pins/simonlei */
+  rsshub_url: string
+  docs: string
+}
+
+export interface DiscoverResult {
+  url: string
+  candidates: RssCandidate[]
+}
+
 export type ArticleFilter = 'all' | 'unread' | 'starred'

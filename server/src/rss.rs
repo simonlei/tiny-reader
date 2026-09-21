@@ -28,17 +28,27 @@ pub struct FetchedFeed {
 pub struct Fetcher {
     client: Client,
     user_agent: String,
+    /// 自部署 RSSHub 实例地址（去尾斜杠），为空表示未启用
+    rsshub_base: String,
 }
 
 impl Fetcher {
-    pub fn new(user_agent: String, timeout: Duration) -> Result<Self, reqwest::Error> {
+    pub fn new(
+        user_agent: String,
+        timeout: Duration,
+        rsshub_base: String,
+    ) -> Result<Self, reqwest::Error> {
         let client = Client::builder()
             .timeout(timeout)
             // 部分源会做重定向，允许跟随
             .redirect(reqwest::redirect::Policy::limited(5))
             .user_agent(&user_agent)
             .build()?;
-        Ok(Self { client, user_agent })
+        Ok(Self {
+            client,
+            user_agent,
+            rsshub_base,
+        })
     }
 
     /// 探测并解析一个源（新增源时用，不走条件请求）
@@ -56,6 +66,9 @@ impl Fetcher {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) -> Result<FetchOutcome, String> {
+        // 逻辑 URL -> 实际请求地址。放在最前面，add_feed / refresh 两条路径都会经过这里。
+        let url = resolve_rsshub_url(url, &self.rsshub_base)?;
+
         let mut headers = HeaderMap::new();
         headers.insert(
             USER_AGENT,
@@ -76,7 +89,7 @@ impl Fetcher {
 
         let resp = self
             .client
-            .get(url)
+            .get(&url)
             .headers(headers)
             .send()
             .await
@@ -214,6 +227,25 @@ fn first_link(e: &feed_rs::model::Entry) -> Option<&String> {
         .map(|l| &l.href)
 }
 
+/// 把 feeds.url 里存的逻辑地址解析成真正要请求的地址。
+///
+/// - `rsshub://zhihu/daily` + base `http://127.0.0.1:1200` -> `http://127.0.0.1:1200/zhihu/daily`
+/// - 其它地址原样返回
+pub fn resolve_rsshub_url(url: &str, base: &str) -> Result<String, String> {
+    let route = match url.strip_prefix("rsshub://") {
+        Some(r) => r,
+        None => return Ok(url.to_string()),
+    };
+    if base.trim().is_empty() {
+        return Err("该订阅源依赖 RSSHub，但服务端未配置 rsshub.base_url".to_string());
+    }
+    let route = route.trim_start_matches('/');
+    if route.is_empty() {
+        return Err("RSSHub 路由为空".to_string());
+    }
+    Ok(format!("{}/{}", base, route))
+}
+
 /// 刷新一个源：拉取 -> 入库 -> 写回元信息
 /// 返回新增文章数
 pub async fn refresh_one(
@@ -259,4 +291,44 @@ pub async fn refresh_one(
     }
 
     Ok(new_count)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_rsshub_url;
+
+    #[test]
+    fn resolve_expands_rsshub_route() {
+        assert_eq!(
+            resolve_rsshub_url("rsshub://zhihu/daily", "http://127.0.0.1:1200").unwrap(),
+            "http://127.0.0.1:1200/zhihu/daily"
+        );
+    }
+
+    /// 库里只存路由，换实例地址后同一个源自动指向新实例
+    #[test]
+    fn resolve_follows_base_change() {
+        let stored = "rsshub://zhihu/daily";
+        assert_eq!(
+            resolve_rsshub_url(stored, "https://rsshub.app").unwrap(),
+            "https://rsshub.app/zhihu/daily"
+        );
+        assert_eq!(
+            resolve_rsshub_url(stored, "https://rss.example.com").unwrap(),
+            "https://rss.example.com/zhihu/daily"
+        );
+    }
+
+    #[test]
+    fn resolve_keeps_plain_url() {
+        assert_eq!(
+            resolve_rsshub_url("https://example.com/feed.xml", "http://127.0.0.1:1200").unwrap(),
+            "https://example.com/feed.xml"
+        );
+    }
+
+    #[test]
+    fn resolve_requires_base() {
+        assert!(resolve_rsshub_url("rsshub://zhihu/daily", "").is_err());
+    }
 }

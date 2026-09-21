@@ -38,3 +38,15 @@ user_agent = "TinyReader/0.1"
 
 # 定时自动刷新的间隔（秒）。0 表示关闭，只在客户端点「刷新」时拉取。
 auto_interval_secs = 0
+
+[rsshub]
+# 自部署的 RSSHub 实例地址。留空 = 关闭 RSSHub 支持。
+# 也可以用环境变量 TINY_READER_RSSHUB 覆盖。
+# 实例还会提供 /api/radar/rules，用于「粘贴网页地址自动发现可用路由」。
+base_url = "http://127.0.0.1:1200"
+
+# 拉取 RSSHub 路由的超时（秒）。RSSHub 是实时抓取，比普通 RSS 慢，默认给 60 秒。
+timeout_secs = 60
+
+# Radar 规则的缓存有效期（秒），过期后在后台重新拉取。
+radar_cache_secs = 43200

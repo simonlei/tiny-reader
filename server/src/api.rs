@@ -16,6 +16,7 @@ use crate::config::Config;
 use crate::db::Db;
 use crate::models::{Article, ArticleQuery, Feed, FeedError, NewFeed, RefreshStatus, UpdateFeed};
 use crate::opml::{self, OpmlEntry};
+use crate::radar::{Radar, RadarCandidate};
 use crate::rss::Fetcher;
 
 // ------------------------------------------------------------------ 共享状态
@@ -25,6 +26,8 @@ pub struct AppState {
     pub db: Arc<Db>,
     pub config: Arc<Config>,
     pub fetcher: Arc<Fetcher>,
+    /// RSSHub Radar 规则索引（未启用 RSSHub 时仍然存在，只是 ensure_loaded 会报错）
+    pub radar: Arc<Radar>,
     pub refresh: Arc<Mutex<RefreshInner>>,
     pub token: Arc<String>,
 }
@@ -139,6 +142,8 @@ pub fn build_router(state: AppState) -> Router {
             get(get_feed).put(update_feed).delete(delete_feed),
         )
         .route("/feeds/{id}/refresh", post(refresh_feed))
+        // 粘贴网页地址，自动发现可用的 RSSHub 路由
+        .route("/feeds/discover", post(discover_feeds))
         // 文章
         .route("/articles", get(list_articles))
         .route("/articles/mark-read", post(mark_read))
@@ -262,6 +267,40 @@ async fn add_feed(
         .map_err(|e| AppError::internal(e.to_string()))?
         .map(Json)
         .ok_or_else(|| AppError::internal("新增后读取失败"))
+}
+
+#[derive(Debug, Deserialize)]
+struct DiscoverBody {
+    url: String,
+}
+
+#[derive(Debug, Serialize)]
+struct DiscoverResponse {
+    /// 归一化后的输入地址
+    url: String,
+    /// 命中的 RSSHub 路由，可能为空（该站点没有收录规则）
+    candidates: Vec<RadarCandidate>,
+}
+
+/// 为一个网页地址查找可用的 RSSHub 路由（Radar）。
+/// 返回空列表表示规则库里没有收录这个站点。
+async fn discover_feeds(
+    State(st): State<AppState>,
+    Json(body): Json<DiscoverBody>,
+) -> Result<Json<DiscoverResponse>, AppError> {
+    let url = normalize_url(&body.url).unwrap_or_else(|| body.url.trim().to_string());
+    if url.is_empty() {
+        return Err(AppError::bad_request("请填写要识别的网址"));
+    }
+
+    st.radar
+        .ensure_loaded()
+        .await
+        .map_err(|e| AppError::bad_request(e))?;
+
+    let candidates = st.radar.discover(&url);
+    tracing::info!("discover {} -> {} 个候选", url, candidates.len());
+    Ok(Json(DiscoverResponse { url, candidates }))
 }
 
 async fn update_feed(
@@ -795,6 +834,15 @@ pub fn normalize_url(input: &str) -> Option<String> {
     if s.is_empty() {
         return None;
     }
+    // RSSHub 路由：rsshub:/zhihu/daily、rsshub://zhihu/daily 都收敛成 rsshub://zhihu/daily。
+    // 存的是逻辑地址而不是展开后的 URL，这样换实例只需改配置，不用改库里的源。
+    if let Some(route) = s.strip_prefix("rsshub:") {
+        let route = route.trim_start_matches('/').trim_end_matches('/');
+        if route.is_empty() {
+            return None;
+        }
+        return Some(format!("rsshub://{route}"));
+    }
     let s = if s.starts_with("http://") || s.starts_with("https://") {
         s.to_string()
     } else if s.starts_with("feed://") {
@@ -832,4 +880,45 @@ fn looks_like_host_port(s: &str) -> bool {
 
 pub fn request_timeout(cfg: &Config) -> Duration {
     Duration::from_secs(cfg.refresh.timeout_secs.max(1))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::normalize_url;
+
+    #[test]
+    fn normalize_rsshub_forms() {
+        assert_eq!(
+            normalize_url("rsshub://zhihu/daily").as_deref(),
+            Some("rsshub://zhihu/daily")
+        );
+        // 单斜杠、首尾多余斜杠都收敛成同一形态
+        assert_eq!(
+            normalize_url("rsshub:/zhihu/daily").as_deref(),
+            Some("rsshub://zhihu/daily")
+        );
+        assert_eq!(
+            normalize_url("  rsshub://zhihu/daily/  ").as_deref(),
+            Some("rsshub://zhihu/daily")
+        );
+    }
+
+    #[test]
+    fn normalize_rejects_empty_route() {
+        assert_eq!(normalize_url("rsshub://"), None);
+        assert_eq!(normalize_url("rsshub:"), None);
+        assert_eq!(normalize_url("   "), None);
+    }
+
+    #[test]
+    fn normalize_keeps_http_untouched() {
+        assert_eq!(
+            normalize_url("https://example.com/feed.xml").as_deref(),
+            Some("https://example.com/feed.xml")
+        );
+        assert_eq!(
+            normalize_url("example.com/feed.xml").as_deref(),
+            Some("https://example.com/feed.xml")
+        );
+    }
 }

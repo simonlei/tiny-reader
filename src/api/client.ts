@@ -3,6 +3,7 @@ import type {
   ArticleFilter,
   ArticlePage,
   Feed,
+  DiscoverResult,
   ImportResult,
   NewFeed,
   RefreshStatus,
@@ -129,6 +130,14 @@ export function deleteFeed(id: number): Promise<{ ok: boolean }> {
 export function refreshFeed(id: number): Promise<{ ok: boolean; new_articles: number }> {
   return request<{ ok: boolean; new_articles: number }>(`/api/feeds/${id}/refresh`, {
     method: 'POST',
+  })
+}
+
+/** 用 RSSHub Radar 为一个网页地址找出可用的路由 */
+export function discoverFeeds(url: string): Promise<DiscoverResult> {
+  return request<DiscoverResult>('/api/feeds/discover', {
+    method: 'POST',
+    body: JSON.stringify({ url }),
   })
 }
 

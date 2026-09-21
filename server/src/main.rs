@@ -3,6 +3,7 @@ mod config;
 mod db;
 mod models;
 mod opml;
+mod radar;
 mod rss;
 
 use std::sync::{Arc, Mutex};
@@ -50,14 +51,32 @@ async fn main() -> Result<()> {
 
     let db = Arc::new(db::Db::open(&db_path).context("初始化数据库失败")?);
     let fetcher = Arc::new(
-        rss::Fetcher::new(cfg.refresh.user_agent.clone(), api::request_timeout(&cfg))
-            .context("初始化 HTTP 客户端失败")?,
+        rss::Fetcher::new(
+            cfg.refresh.user_agent.clone(),
+            api::request_timeout(&cfg),
+            cfg.rsshub.base_url_trimmed(),
+        )
+        .context("初始化 HTTP 客户端失败")?,
     );
+
+    let radar = Arc::new(radar::Radar::new(&cfg.rsshub).context("初始化 RSSHub Radar 失败")?);
+    if cfg.rsshub.enabled() {
+        tracing::info!("RSSHub 实例: {}", cfg.rsshub.base_url_trimmed());
+        // 预热规则缓存，失败不阻塞启动（首次 discover 时会再试一次）
+        let r = radar.clone();
+        tokio::spawn(async move {
+            match r.ensure_loaded().await {
+                Ok(()) => tracing::info!("Radar 规则预热完成（{} 条）", r.rule_count()),
+                Err(e) => tracing::warn!("Radar 规则预热失败: {e}"),
+            }
+        });
+    }
 
     let state = AppState {
         db,
         config: Arc::new(cfg.clone()),
         fetcher,
+        radar: radar.clone(),
         refresh: Arc::new(Mutex::new(api::RefreshInner::default())),
         token: Arc::new(cfg.auth.token.clone()),
     };

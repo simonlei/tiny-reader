@@ -19,6 +19,8 @@ pub struct Config {
     pub storage: StorageConfig,
     #[serde(default)]
     pub refresh: RefreshConfig,
+    #[serde(default)]
+    pub rsshub: RsshubConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -66,6 +68,23 @@ pub struct RefreshConfig {
     pub auto_interval_secs: u64,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RsshubConfig {
+    /// 自部署的 RSSHub 实例地址，例如 "http://127.0.0.1:1200"。
+    /// 留空表示关闭 RSSHub 支持（此时 rsshub:// 源会拉取失败并给出明确提示）。
+    #[serde(default)]
+    pub base_url: String,
+
+    /// 拉取 RSSHub 路由的超时（秒）。RSSHub 是实时抓取，比普通 RSS 慢，
+    /// 默认给得比 refresh.timeout_secs 更长。
+    #[serde(default = "default_rsshub_timeout_secs")]
+    pub timeout_secs: u64,
+
+    /// Radar 规则（/api/radar/rules）的缓存有效期（秒），过期后后台重新拉取
+    #[serde(default = "default_radar_cache_secs")]
+    pub radar_cache_secs: u64,
+}
+
 fn default_host() -> String {
     "127.0.0.1".into()
 }
@@ -89,6 +108,12 @@ fn default_timeout_secs() -> u64 {
 }
 fn default_user_agent() -> String {
     "TinyReader/0.1 (+https://github.com/simon-lei/tiny-reader)".into()
+}
+fn default_rsshub_timeout_secs() -> u64 {
+    60
+}
+fn default_radar_cache_secs() -> u64 {
+    12 * 60 * 60
 }
 
 impl Default for ServerConfig {
@@ -124,6 +149,15 @@ impl Default for RefreshConfig {
         }
     }
 }
+impl Default for RsshubConfig {
+    fn default() -> Self {
+        Self {
+            base_url: String::new(),
+            timeout_secs: default_rsshub_timeout_secs(),
+            radar_cache_secs: default_radar_cache_secs(),
+        }
+    }
+}
 impl Default for Config {
     fn default() -> Self {
         Self {
@@ -131,7 +165,20 @@ impl Default for Config {
             auth: AuthConfig::default(),
             storage: StorageConfig::default(),
             refresh: RefreshConfig::default(),
+            rsshub: RsshubConfig::default(),
         }
+    }
+}
+
+impl RsshubConfig {
+    /// 是否启用了 RSSHub 支持
+    pub fn enabled(&self) -> bool {
+        !self.base_url.trim().is_empty()
+    }
+
+    /// 去掉结尾斜杠的实例地址
+    pub fn base_url_trimmed(&self) -> String {
+        self.base_url.trim().trim_end_matches('/').to_string()
     }
 }
 
@@ -212,6 +259,9 @@ pub fn load(explicit: Option<PathBuf>) -> Result<(Config, PathBuf)> {
     }
     if let Ok(d) = std::env::var("TINY_READER_DB") {
         cfg.storage.database_path = d;
+    }
+    if let Ok(b) = std::env::var("TINY_READER_RSSHUB") {
+        cfg.rsshub.base_url = b;
     }
 
     if cfg.auth.token.trim().is_empty() {
