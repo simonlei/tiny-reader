@@ -18,9 +18,11 @@ export type UpdateState =
 export async function checkForUpdate(): Promise<{ version: string; notes: string | null } | null> {
   const update = await check()
   if (!update) return null
+  // rawJson 是 Record<string, unknown>，取出来的值是 unknown，需要显式收窄
+  const notes = update.rawJson?.notes
   return {
     version: update.version,
-    notes: update.rawJson?.notes ?? null,
+    notes: typeof notes === 'string' ? notes : null,
   }
 }
 

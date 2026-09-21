@@ -54,8 +54,16 @@ data class UiState(
     val readerOpen: Boolean = false,
     /** 一次性提示（OPML 导入结果等） */
     val toast: String? = null,
+
+    /**
+     * 上一页是否返回了满页。
+     * 未读过滤器下服务端 total 会随已读递减，不能用 articles.size 和 total 比，
+     * 否则读到一半会误判"到底了"。
+     */
+    val lastPageFull: Boolean = false,
 ) {
-    val hasMore: Boolean get() = articles.size < total
+    /** 是否还有下一页：只看上一页是否满页，不受已读导致的 total 递减影响 */
+    val hasMore: Boolean get() = lastPageFull
 
     val selectedIndex: Int get() = articles.indexOfFirst { it.id == selectedId }
 
@@ -174,6 +182,8 @@ class ReaderViewModel : ViewModel() {
                     articles = merged,
                     selectedId = selected,
                     total = page.total,
+                    // 只有返回满页才认为后面还有；空页 / 不满页说明到末尾了
+                    lastPageFull = page.items.size >= PAGE_SIZE,
                     error = "",
                     connected = true,
                 )

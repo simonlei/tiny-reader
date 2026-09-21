@@ -34,6 +34,13 @@ export const state = reactive({
     started_at: null,
     finished_at: null,
   } as RefreshStatus,
+
+  /**
+   * 上一页是否返回了满页。
+   * 未读过滤器下服务端 total 会随已读递减，不能直接拿 articles.length 和 total 比，
+   * 否则读到一半就会误判"到底了"。改为：只要上一次请求返回满页，就认为还有下一页。
+   */
+  lastPageFull: false,
 })
 
 let autoReadTimer: ReturnType<typeof setTimeout> | undefined
@@ -46,7 +53,12 @@ export const selectedArticle = computed<Article | null>(
   () => state.articles.find((a) => a.id === state.selectedId) ?? null,
 )
 
-export const hasMore = computed(() => state.articles.length < state.total)
+/**
+ * 是否还有下一页。
+ * 注意：不能写 articles.length < total —— 未读过滤器下 total 是「当前剩余未读数」，
+ * 会随着阅读递减，而 articles 只增不减，两者会在中途交叉导致提前显示"到底了"。
+ */
+export const hasMore = computed(() => state.lastPageFull)
 
 export const currentFeedTitle = computed(() => {
   if (state.selectedFeedId == null) return '全部文章'
@@ -118,6 +130,8 @@ export async function loadArticles(reset = true) {
       state.articles.push(...page.items.filter((a) => !known.has(a.id)))
       if (state.selectedId == null) state.selectedId = state.articles[0]?.id ?? null
     }
+    // 只有返回满页才认为后面还有；空页 / 不满页说明到末尾了
+    state.lastPageFull = page.items.length >= PAGE_SIZE
     state.total = page.total
     state.error = ''
     state.connected = true
