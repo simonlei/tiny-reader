@@ -101,7 +101,10 @@ async function runSubmit(raw: string, allowDiscover: boolean) {
   } catch (e) {
     let msg = (e as Error).message
     if (msg.includes('无法读取该订阅源')) {
-      msg += '。若该站点本身不提供 RSS，可在服务端 config.toml 配置 [rsshub].base_url 后用 RSSHub 订阅。'
+      // 已经是 rsshub:// 地址时，问题出在路由本身，再让人去配 base_url 只会误导
+      msg += isRsshubUrl(raw)
+        ? '。该 RSSHub 路由可能不存在或参数不合法，可换一条候选路由试试。'
+        : '。若该站点本身不提供 RSS，可在服务端 config.toml 配置 [rsshub].base_url 后用 RSSHub 订阅。'
     }
     error.value = msg
   } finally {
@@ -159,6 +162,11 @@ async function doDelete() {
       <p class="tip text-mute">
         都不是想要的？可以
         <a href="#" @click.prevent="addDirectly">直接按原地址添加</a>
+        <template v-if="candidates[0].docs">
+          ，或先看
+          <a :href="candidates[0].docs" target="_blank" rel="noopener">路由文档</a>
+          确认合法参数
+        </template>
       </p>
     </div>
 

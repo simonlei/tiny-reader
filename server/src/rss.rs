@@ -67,6 +67,8 @@ impl Fetcher {
         last_modified: Option<&str>,
     ) -> Result<FetchOutcome, String> {
         // 逻辑 URL -> 实际请求地址。放在最前面，add_feed / refresh 两条路径都会经过这里。
+        // 记住「原本是不是 rsshub://」，出错时才能把路由回显给用户。
+        let logical_route = url.strip_prefix("rsshub://");
         let url = resolve_rsshub_url(url, &self.rsshub_base)?;
 
         let mut headers = HeaderMap::new();
@@ -100,7 +102,17 @@ impl Fetcher {
             return Ok(FetchOutcome::NotModified);
         }
         if !status.is_success() {
-            return Err(format!("HTTP {status}"));
+            // RSSHub 出错时返回的是 HTML 错误页，只看状态码完全看不出原因，
+            // 把页面里的 Error Message 挖出来一起返回。
+            let body = resp.bytes().await.unwrap_or_default();
+            let detail = describe_http_error(&body);
+            let route_hint = logical_route
+                .map(|r| format!("（RSSHub 路由 /{}）", r.trim_start_matches('/')))
+                .unwrap_or_default();
+            return Err(match detail {
+                Some(d) => format!("HTTP {status}：{d}{route_hint}"),
+                None => format!("HTTP {status}{route_hint}"),
+            });
         }
 
         let etag = resp
@@ -246,6 +258,62 @@ pub fn resolve_rsshub_url(url: &str, base: &str) -> Result<String, String> {
     Ok(format!("{}/{}", base, route))
 }
 
+/// 非 2xx 响应里尽量挖出一句人话，别只报 "HTTP 503"。
+fn describe_http_error(body: &[u8]) -> Option<String> {
+    const MAX_SCAN: usize = 64 * 1024;
+    let text = String::from_utf8_lossy(&body[..body.len().min(MAX_SCAN)]);
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    // 不是 HTML（多半是网关/反爬返回的纯文本），原样摘一段
+    if !text.starts_with('<') {
+        return Some(truncate_chars(text, 120));
+    }
+    // RSSHub 错误页：<p class="message">Error Message:<br/><code ...>分类不存在</code></p>
+    if let Some(i) = text.find("Error Message") {
+        if let Some(msg) = extract_tag_text(&text[i..], "code") {
+            // RSSHub 的消息形如 "Error: 分类不存在"，前缀留着是废话
+            let msg = unescape_html(&msg).trim().to_string();
+            let msg = msg.strip_prefix("Error:").unwrap_or(&msg).trim().to_string();
+            if !msg.is_empty() {
+                return Some(truncate_chars(&msg, 120));
+            }
+        }
+    }
+    // 退化：拿 <title> 当一句描述
+    text.find("<title")
+        .and_then(|i| extract_tag_text(&text[i..], "title"))
+        .map(|t| unescape_html(&t).trim().to_string())
+        .filter(|t| !t.is_empty())
+        .map(|t| truncate_chars(&t, 120))
+}
+
+/// 从 `html`（开头处应为目标标签）里取出标签内的文本
+fn extract_tag_text(html: &str, tag: &str) -> Option<String> {
+    let open_start = html.find(&format!("<{tag}"))?;
+    let open_end = html[open_start..].find('>')? + open_start + 1;
+    let close_start = html[open_end..].find(&format!("</{tag}>"))? + open_end;
+    Some(html[open_end..close_start].to_string())
+}
+
+fn unescape_html(s: &str) -> String {
+    s.replace("&amp;", "&")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&apos;", "'")
+        .replace("&nbsp;", " ")
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
+    match s.char_indices().nth(max) {
+        Some((i, _)) => format!("{}…", s[..i].trim_end()),
+        None => s.to_string(),
+    }
+}
+
 /// 刷新一个源：拉取 -> 入库 -> 写回元信息
 /// 返回新增文章数
 pub async fn refresh_one(
@@ -295,7 +363,7 @@ pub async fn refresh_one(
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_rsshub_url;
+    use super::{describe_http_error, resolve_rsshub_url};
 
     #[test]
     fn resolve_expands_rsshub_route() {
@@ -330,5 +398,36 @@ mod tests {
     #[test]
     fn resolve_requires_base() {
         assert!(resolve_rsshub_url("rsshub://zhihu/daily", "").is_err());
+    }
+
+    /// RSSHub 出错返回的是 HTML 错误页，状态码看不出原因，得把 Error Message 挖出来
+    #[test]
+    fn describe_extracts_rsshub_error_message() {
+        let html = r#"<html><head><title>Welcome to RSSHub!</title></head><body>
+<p class="message">Error Message:<br/><code class="mt-2 block">Error: 分类不存在</code></p>
+<p class="message">Route: <code>/juejin/category/:category</code></p></body></html>"#;
+        assert_eq!(
+            describe_http_error(html.as_bytes()).as_deref(),
+            Some("分类不存在")
+        );
+    }
+
+    /// 没有 Error Message 时退化到 <title>
+    #[test]
+    fn describe_falls_back_to_title() {
+        let html = b"<html><head><title>503 Service Unavailable</title></head><body></body></html>";
+        assert_eq!(
+            describe_http_error(html).as_deref(),
+            Some("503 Service Unavailable")
+        );
+    }
+
+    #[test]
+    fn describe_handles_plain_text_and_empty() {
+        assert_eq!(
+            describe_http_error(b"rate limited").as_deref(),
+            Some("rate limited")
+        );
+        assert_eq!(describe_http_error(b"   ").as_deref(), None);
     }
 }
