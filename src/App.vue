@@ -9,6 +9,7 @@ import ImportDialog from './components/ImportDialog.vue'
 import * as app from '@/stores/app'
 import { needsSetup } from '@/stores/settings'
 import { openExternal } from '@/lib/tauri'
+import { scrollArticle } from '@/lib/readerScroll'
 import type { Feed } from '@/api/types'
 
 const { state } = app
@@ -64,12 +65,23 @@ async function onKeydown(e: KeyboardEvent) {
     case 'j':
     case 'arrowdown':
       e.preventDefault()
-      await app.move(1)
+      // 先在文章内向下滚，滚到底了才切下一篇
+      if (!scrollArticle(1)) await app.move(1)
       break
     case 'k':
     case 'arrowup':
       e.preventDefault()
+      // 先在文章内向上滚，滚到顶了才切上一篇
+      if (!scrollArticle(-1)) await app.move(-1)
+      break
+    // 左右键：无视当前滚动位置，直接切换上/下一篇文章
+    case 'arrowleft':
+      e.preventDefault()
       await app.move(-1)
+      break
+    case 'arrowright':
+      e.preventDefault()
+      await app.move(1)
       break
     case 's':
       e.preventDefault()

@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { computed, ref, watch, nextTick } from 'vue'
+import { computed, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import * as app from '@/stores/app'
 import { openExternal } from '@/lib/tauri'
 import { formatTime } from '@/lib/format'
 import { absolutizeHtml } from '@/lib/html'
+import { registerReaderBody } from '@/lib/readerScroll'
 
 const { state } = app
 const selected = app.selectedArticle
 
 // 正文滚动容器，切换文章时要把滚动条拉回顶部
 const bodyEl = ref<HTMLElement | null>(null)
+
+// 注册给快捷键：j / ↓ 与 k / ↑ 先在正文里滚动，到边界才切换文章
+watch(bodyEl, (el) => registerReaderBody(el ?? null), { immediate: true })
+onBeforeUnmount(() => registerReaderBody(null))
 
 watch(
   () => state.selectedId,
@@ -80,7 +85,7 @@ function onContentClick(e: MouseEvent) {
           <button v-if="selected.url" @click="openExternal(selected.url)">在浏览器中打开</button>
           <span class="spacer" />
           <span class="kbd-hint text-mute">
-            <kbd>j</kbd> 下一篇 <kbd>k</kbd> 上一篇
+            <kbd>j</kbd> / <kbd>↓</kbd> 滚动 · <kbd>←</kbd> <kbd>→</kbd> 切换文章
           </span>
         </div>
       </header>
@@ -99,8 +104,9 @@ function onContentClick(e: MouseEvent) {
       <p v-else-if="state.loading">加载中…</p>
       <p v-else>选择一篇文章开始阅读</p>
       <div class="keys">
-        <div><kbd>j</kbd> 下一篇文章</div>
-        <div><kbd>k</kbd> 上一篇文章</div>
+        <div><kbd>j</kbd> / <kbd>↓</kbd> 向下滚动，到底换下一篇</div>
+        <div><kbd>k</kbd> / <kbd>↑</kbd> 向上滚动，到顶换上一篇</div>
+        <div><kbd>←</kbd> / <kbd>→</kbd> 直接切换上/下一篇文章</div>
         <div><kbd>s</kbd> 收藏 / 取消收藏</div>
         <div><kbd>u</kbd> 已读 / 未读</div>
         <div><kbd>o</kbd> 在浏览器打开</div>
