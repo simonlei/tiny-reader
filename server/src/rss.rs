@@ -275,7 +275,11 @@ fn describe_http_error(body: &[u8]) -> Option<String> {
         if let Some(msg) = extract_tag_text(&text[i..], "code") {
             // RSSHub 的消息形如 "Error: 分类不存在"，前缀留着是废话
             let msg = unescape_html(&msg).trim().to_string();
-            let msg = msg.strip_prefix("Error:").unwrap_or(&msg).trim().to_string();
+            let msg = msg
+                .strip_prefix("Error:")
+                .unwrap_or(&msg)
+                .trim()
+                .to_string();
             if !msg.is_empty() {
                 return Some(truncate_chars(&msg, 120));
             }

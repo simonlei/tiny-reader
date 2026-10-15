@@ -219,14 +219,50 @@ impl Db {
 
     // ------------------------------------------------------------- articles
 
+    /// 写入文章。同一 `(feed_id, guid)` 已存在则跳过。
+    ///
+    /// 同一源在 6 小时内（按发布时间，没有则按抓取时间）若已有相同或接近的标题，
+    /// 后到的那一篇也会被忽略。接近的判定见 [`titles_near_duplicate`]。
     pub fn insert_articles(&self, feed_id: i64, items: &[NewArticle]) -> Result<usize> {
         if items.is_empty() {
             return Ok(0);
         }
-        let now = Utc::now().to_rfc3339();
+        let now = Utc::now();
+        let now_s = now.to_rfc3339();
         let mut conn = self.0.lock().unwrap();
+
+        // 同一源已有的标题。窗口按文章时间而不是「最近抓到的」，所以要带上更早的文章：
+        // 源里一条旧闻如果换了 guid 又被送过来，发布时间仍落在 6 小时内就该丢掉。
+        let mut kept: Vec<TitleStamp> = {
+            let mut stmt = conn.prepare(
+                "SELECT title, COALESCE(published_at, fetched_at) FROM articles WHERE feed_id = ?1",
+            )?;
+            let rows = stmt
+                .query_map(params![feed_id], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                })?
+                .collect::<rusqlite::Result<Vec<(String, Option<String>)>>>()?;
+            rows.into_iter()
+                .filter_map(|(title, ts)| {
+                    Some(TitleStamp {
+                        key: title_key(&title)?,
+                        at: parse_dt(ts).unwrap_or(now),
+                    })
+                })
+                .collect()
+        };
+
+        // 同一批里按时间从早到晚处理，让更早的那篇留下，后面接近的被忽略。
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by(|&i, &j| {
+            article_time(items[i].published_at.as_deref(), now)
+                .cmp(&article_time(items[j].published_at.as_deref(), now))
+                .then(i.cmp(&j))
+        });
+
         let tx = conn.transaction()?;
         let mut count = 0usize;
+        let mut skipped = 0usize;
         {
             let mut stmt = tx.prepare(
                 r#"
@@ -235,22 +271,51 @@ impl Db {
                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
                 "#,
             )?;
-            for a in items {
-                let n = stmt.execute(params![
-                    feed_id,
-                    a.guid,
-                    a.title,
-                    a.author,
-                    a.url,
-                    a.summary,
-                    a.content,
-                    a.published_at,
-                    now,
-                ])?;
-                count += n;
+            for idx in order {
+                let a = &items[idx];
+                let at = article_time(a.published_at.as_deref(), now);
+                if let Some(key) = title_key(&a.title) {
+                    if kept.iter().any(|k| {
+                        within_dedup_window(k.at, at) && normalized_titles_close(&k.key, &key)
+                    }) {
+                        skipped += 1;
+                        continue;
+                    }
+                    let n = stmt.execute(params![
+                        feed_id,
+                        a.guid,
+                        a.title,
+                        a.author,
+                        a.url,
+                        a.summary,
+                        a.content,
+                        a.published_at,
+                        now_s,
+                    ])?;
+                    if n > 0 {
+                        count += n;
+                        kept.push(TitleStamp { key, at });
+                    }
+                } else {
+                    let n = stmt.execute(params![
+                        feed_id,
+                        a.guid,
+                        a.title,
+                        a.author,
+                        a.url,
+                        a.summary,
+                        a.content,
+                        a.published_at,
+                        now_s,
+                    ])?;
+                    count += n;
+                }
             }
         }
         tx.commit()?;
+        if skipped > 0 {
+            tracing::info!(feed_id, skipped, "同一源 6 小时内标题相同或接近，已忽略");
+        }
         Ok(count)
     }
 
@@ -306,9 +371,7 @@ impl Db {
             params.push(Box::new(t));
             params.push(Box::new(q.before_id.unwrap_or(i64::MAX)));
         }
-        sql.push_str(
-            " ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC LIMIT ?",
-        );
+        sql.push_str(" ORDER BY COALESCE(a.published_at, a.fetched_at) DESC, a.id DESC LIMIT ?");
         params.push(Box::new(q.limit));
         if !use_cursor {
             sql.push_str(" OFFSET ?");
@@ -516,4 +579,285 @@ fn parse_dt(s: Option<String>) -> Option<DateTime<Utc>> {
                 .map(|d| DateTime::<Utc>::from_naive_utc_and_offset(d, Utc))
                 .ok()
         })
+}
+
+/// 同一源标题去重的时间窗口（小时）。两篇文章的时间差不超过这个值才比较标题。
+const TITLE_DEDUP_WINDOW_HOURS: i64 = 6;
+/// 归一化后允许多出来的连续字符数。用来吃掉「搜狐 / 搜狐网」这种站点尾巴。
+const TITLE_NEAR_MAX_EXTRA: usize = 3;
+/// 短标题只认完全相同，避免「上涨 / 上涨了」这类被误伤。
+const TITLE_NEAR_MIN_CHARS: usize = 10;
+
+struct TitleStamp {
+    key: String,
+    at: DateTime<Utc>,
+}
+
+fn article_time(published_at: Option<&str>, fallback: DateTime<Utc>) -> DateTime<Utc> {
+    published_at
+        .and_then(|s| parse_dt(Some(s.to_string())))
+        .unwrap_or(fallback)
+}
+
+fn within_dedup_window(a: DateTime<Utc>, b: DateTime<Utc>) -> bool {
+    let secs = (a - b).num_seconds().saturating_abs();
+    secs <= TITLE_DEDUP_WINDOW_HOURS * 3600
+}
+
+/// 标题相同，或去掉空白和标点后只差一小段连续字符（加在开头、中间或结尾都行）。
+fn titles_near_duplicate(a: &str, b: &str) -> bool {
+    match (title_key(a), title_key(b)) {
+        (Some(x), Some(y)) => normalized_titles_close(&x, &y),
+        _ => false,
+    }
+}
+
+/// `(无标题)` 是抓取时的占位，不参与去重，否则无标题文章会互相挡住。
+fn title_key(title: &str) -> Option<String> {
+    let trimmed = title.trim();
+    if trimmed.is_empty() || trimmed == "(无标题)" {
+        return None;
+    }
+    let key = normalize_title(trimmed);
+    if key.is_empty() {
+        None
+    } else {
+        Some(key)
+    }
+}
+
+fn normalize_title(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for ch in s.chars() {
+        let ch = fold_width(ch);
+        if ch.is_whitespace() || is_title_punct(ch) {
+            continue;
+        }
+        for c in ch.to_lowercase() {
+            out.push(c);
+        }
+    }
+    out
+}
+
+fn fold_width(ch: char) -> char {
+    match ch as u32 {
+        0x3000 => ' ',
+        0xFF01..=0xFF5E => char::from_u32(ch as u32 - 0xFEE0).unwrap_or(ch),
+        _ => ch,
+    }
+}
+
+fn is_title_punct(ch: char) -> bool {
+    ch.is_ascii_punctuation()
+        || matches!(
+            ch as u32,
+            0x2010..=0x2027 | 0x2030..=0x205E | 0x3001..=0x303F
+        )
+}
+
+fn normalized_titles_close(a: &str, b: &str) -> bool {
+    if a == b {
+        return true;
+    }
+    let (shorter, longer) = if a.chars().count() <= b.chars().count() {
+        (a, b)
+    } else {
+        (b, a)
+    };
+    let sl = shorter.chars().count();
+    let extra = longer.chars().count() - sl;
+    if sl < TITLE_NEAR_MIN_CHARS || extra == 0 || extra > TITLE_NEAR_MAX_EXTRA {
+        return false;
+    }
+    let sb: Vec<char> = shorter.chars().collect();
+    let lb: Vec<char> = longer.chars().collect();
+    let mut i = 0;
+    while i < sb.len() && sb[i] == lb[i] {
+        i += 1;
+    }
+    sb[i..] == lb[i + extra..]
+}
+
+#[cfg(test)]
+mod tests {
+    use chrono::{Duration, Utc};
+
+    use super::{titles_near_duplicate, Db};
+    use crate::models::{ArticleQuery, NewFeed};
+
+    const SOHU: &str = "伊朗袭击行动升级，一艘集装箱船于霍尔木兹海峡沉没 - 搜狐";
+    const SOHU_NET: &str = "伊朗袭击行动升级，一艘集装箱船于霍尔木兹海峡沉没 - 搜狐网";
+
+    #[test]
+    fn site_suffix_counts_as_near_duplicate() {
+        assert!(titles_near_duplicate(SOHU, SOHU_NET));
+        assert!(titles_near_duplicate(
+            "搜狐：伊朗袭击行动升级，一艘集装箱船于霍尔木兹海峡沉没",
+            "搜狐网：伊朗袭击行动升级，一艘集装箱船于霍尔木兹海峡沉没",
+        ));
+        assert!(titles_near_duplicate(
+            "Hello, World — Daily",
+            "hello world daily"
+        ));
+    }
+
+    #[test]
+    fn distinct_headlines_stay() {
+        assert!(!titles_near_duplicate(
+            "伊朗袭击行动升级，一艘集装箱船于霍尔木兹海峡沉没",
+            "伊朗袭击行动升级，两艘油轮在霍尔木兹海峡遭袭",
+        ));
+        assert!(!titles_near_duplicate(
+            "会议在北京召开并公布完整方案",
+            "会议在上海召开并公布完整方案",
+        ));
+        assert!(!titles_near_duplicate("上涨", "下跌"));
+        assert!(titles_near_duplicate("上涨", "上涨"));
+        assert!(!titles_near_duplicate("(无标题)", "(无标题)"));
+    }
+
+    #[test]
+    fn skips_later_near_title_from_same_feed_within_six_hours() {
+        let path = std::env::temp_dir().join(format!(
+            "tiny-reader-title-dedup-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&path).unwrap();
+        let feed = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/a.xml".into(),
+                title: Some("A".into()),
+                category: None,
+            })
+            .unwrap();
+        let other = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/b.xml".into(),
+                title: Some("B".into()),
+                category: None,
+            })
+            .unwrap();
+
+        let t0 = Utc::now();
+        let at = |d: Duration| Some((t0 + d).to_rfc3339());
+
+        assert_eq!(
+            db.insert_articles(feed.id, &[article("g-early", SOHU, at(Duration::zero()))])
+                .unwrap(),
+            1
+        );
+
+        // 同一批里：2 小时后的近重复标题丢掉，另一篇不同标题留下。
+        assert_eq!(
+            db.insert_articles(
+                feed.id,
+                &[
+                    article("g-near-2h", SOHU_NET, at(Duration::hours(2))),
+                    article(
+                        "g-other",
+                        "完全不同的另一则航运新闻标题",
+                        at(Duration::hours(2))
+                    ),
+                ],
+            )
+            .unwrap(),
+            1
+        );
+
+        // 刚好 6 小时仍算窗口内；超过 1 秒则留下。
+        assert_eq!(
+            db.insert_articles(
+                feed.id,
+                &[article("g-boundary", SOHU_NET, at(Duration::hours(6)))],
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            db.insert_articles(
+                feed.id,
+                &[article(
+                    "g-outside",
+                    SOHU_NET,
+                    at(Duration::hours(6) + Duration::seconds(1)),
+                )],
+            )
+            .unwrap(),
+            1
+        );
+
+        // 别的源不受影响。
+        assert_eq!(
+            db.insert_articles(
+                other.id,
+                &[article("g-other-feed", SOHU_NET, at(Duration::hours(1)))],
+            )
+            .unwrap(),
+            1
+        );
+
+        // 同一批乱序到达时，留下更早的那篇。
+        let batch_early = "另一条足够长的新闻标题用于批量去重 - 甲";
+        let batch_late = "另一条足够长的新闻标题用于批量去重 - 甲网";
+        assert_eq!(
+            db.insert_articles(
+                feed.id,
+                &[
+                    article("g-batch-late", batch_late, at(Duration::hours(30))),
+                    article("g-batch-early", batch_early, at(Duration::hours(29))),
+                ],
+            )
+            .unwrap(),
+            1
+        );
+
+        let guids = |id: i64| -> Vec<String> {
+            db.list_articles(&ArticleQuery {
+                feed_id: Some(id),
+                limit: 50,
+                ..ArticleQuery::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|a| a.guid)
+            .collect()
+        };
+
+        let got = guids(feed.id);
+        for guid in ["g-early", "g-other", "g-outside", "g-batch-early"] {
+            assert!(got.iter().any(|g| g == guid), "missing {guid} in {got:?}");
+        }
+        for guid in ["g-near-2h", "g-boundary", "g-batch-late"] {
+            assert!(
+                got.iter().all(|g| g != guid),
+                "{guid} should have been skipped, got {got:?}"
+            );
+        }
+        assert_eq!(guids(other.id), vec!["g-other-feed".to_string()]);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+    }
+
+    fn article(guid: &str, title: &str, published_at: Option<String>) -> super::NewArticle {
+        super::NewArticle {
+            guid: guid.into(),
+            title: title.into(),
+            author: None,
+            url: None,
+            summary: None,
+            content: None,
+            published_at,
+        }
+    }
 }

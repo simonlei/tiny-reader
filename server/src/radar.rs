@@ -162,8 +162,8 @@ impl Radar {
             .bytes()
             .await
             .map_err(|e| format!("读取 Radar 规则失败: {e}"))?;
-        let json: HashMap<String, HashMap<String, Value>> = serde_json::from_slice(&body)
-            .map_err(|e| format!("解析 Radar 规则失败: {e}"))?;
+        let json: HashMap<String, HashMap<String, Value>> =
+            serde_json::from_slice(&body).map_err(|e| format!("解析 Radar 规则失败: {e}"))?;
 
         let mut by_host: HashMap<String, Vec<RadarRule>> = HashMap::new();
         let mut count = 0usize;
