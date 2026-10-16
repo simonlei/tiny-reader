@@ -81,6 +81,14 @@ function snippet(a: Article): string {
             {{ f.label }}
           </button>
         </div>
+        <button
+          class="ghost icon-btn"
+          title="刷新文章列表"
+          :disabled="state.reloading"
+          @click="app.refreshList()"
+        >
+          <span :class="{ spin: state.reloading }">⟳</span>
+        </button>
         <button class="ghost" title="全部标为已读 (Shift+A)" @click="app.markAllRead()">
           全部已读
         </button>
@@ -174,6 +182,14 @@ function snippet(a: Article): string {
 .lh-actions button {
   font-size: 12px;
   padding: 4px 8px;
+}
+.icon-btn {
+  padding: 3px 7px;
+  font-size: 14px;
+  line-height: 1.2;
+}
+.icon-btn span {
+  display: inline-block;
 }
 
 .filter-group {

@@ -58,6 +58,11 @@ function isCollapsed(name: string) {
       />
     </div>
 
+    <div v-if="state.error" class="conn-err">
+      <span class="truncate" :title="state.error">⚠ {{ state.error }}</span>
+      <button class="ghost" @click="emit('settings')">设置</button>
+    </div>
+
     <nav class="quick">
       <button
         class="quick-item"
@@ -72,8 +77,40 @@ function isCollapsed(name: string) {
     <div class="feeds">
       <div class="feeds-head">
         <span class="text-mute">订阅源 ({{ state.feeds.length }})</span>
-        <button class="ghost icon-btn" title="添加订阅源" @click="emit('add')">＋</button>
+        <span class="head-actions">
+          <button
+            class="ghost icon-btn"
+            title="重新拉取所有订阅源 (R)"
+            :disabled="state.refreshing"
+            @click="app.refreshAll()"
+          >
+            <span :class="{ spin: state.refreshing }">⟳</span>
+          </button>
+          <button class="ghost icon-btn" title="添加订阅源" @click="emit('add')">＋</button>
+        </span>
       </div>
+
+      <div v-if="state.refreshing" class="refresh-progress">
+        <span class="text-dim">
+          {{ state.refreshInfo.done }} / {{ state.refreshInfo.total }}
+          <template v-if="state.refreshInfo.new_articles">
+            · 新增 {{ state.refreshInfo.new_articles }} 篇
+          </template>
+        </span>
+        <span class="bar">
+          <i
+            :style="{
+              width:
+                (state.refreshInfo.total
+                  ? (state.refreshInfo.done / state.refreshInfo.total) * 100
+                  : 0) + '%',
+            }"
+          />
+        </span>
+      </div>
+      <p v-else-if="state.refreshInfo.errors.length" class="refresh-fail">
+        {{ state.refreshInfo.errors.length }} 个源失败
+      </p>
 
       <div v-if="!state.feeds.length" class="empty text-mute">
         还没有订阅源，点上面的 ＋ 或导入 OPML
@@ -168,6 +205,28 @@ function isCollapsed(name: string) {
   padding: 6px 9px;
 }
 
+.conn-err {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 12px 8px;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: rgba(224, 163, 58, 0.1);
+  color: var(--warn);
+  font-size: 12px;
+  min-width: 0;
+}
+.conn-err .truncate {
+  flex: 1;
+}
+.conn-err button {
+  flex: none;
+  padding: 1px 6px;
+  font-size: 11.5px;
+  color: var(--warn);
+}
+
 .quick {
   padding: 0 8px;
   display: flex;
@@ -204,6 +263,41 @@ function isCollapsed(name: string) {
   justify-content: space-between;
   padding: 4px 6px 6px;
   font-size: 11.5px;
+}
+.head-actions {
+  display: flex;
+  align-items: center;
+}
+.head-actions .icon-btn {
+  padding: 0 6px;
+}
+.head-actions .icon-btn span {
+  display: inline-block;
+}
+.refresh-progress {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 0 6px 8px;
+  font-size: 11px;
+}
+.bar {
+  display: block;
+  height: 3px;
+  background: var(--panel-2);
+  border-radius: 2px;
+  overflow: hidden;
+}
+.bar i {
+  display: block;
+  height: 100%;
+  background: var(--accent);
+}
+.refresh-fail {
+  margin: 0;
+  padding: 0 6px 6px;
+  font-size: 11.5px;
+  color: var(--warn);
 }
 .empty {
   padding: 10px 8px;

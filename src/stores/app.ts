@@ -25,6 +25,8 @@ export const state = reactive({
 
   stats: { total: 0, unread: 0, starred: 0 } as Stats,
 
+  /** 从服务端重载当前文章列表，不重新抓取 RSS */
+  reloading: false,
   refreshing: false,
   refreshInfo: {
     running: false,
@@ -273,6 +275,20 @@ export async function markAllRead() {
 }
 
 // ----------------------------------------------------------------- 刷新
+
+/** 从服务端重载订阅源、统计和当前文章列表，不触发 RSS 抓取 */
+export async function refreshList() {
+  if (state.reloading) return
+  state.reloading = true
+  try {
+    await Promise.all([loadFeeds(), loadStats()])
+    await loadArticles(true)
+  } catch {
+    // loadFeeds 失败时已经把错误写进 state.error
+  } finally {
+    state.reloading = false
+  }
+}
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 

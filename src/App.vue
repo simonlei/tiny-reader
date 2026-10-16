@@ -147,54 +147,6 @@ async function onFeedSaved() {
 
 <template>
   <div class="app">
-    <header class="topbar">
-      <button
-        class="refresh"
-        :disabled="state.refreshing"
-        title="重新拉取所有订阅源 (R)"
-        @click="app.refreshAll()"
-      >
-        <span :class="{ spin: state.refreshing }">⟳</span>
-        {{ state.refreshing ? '刷新中' : '刷新' }}
-      </button>
-
-      <div v-if="state.refreshing" class="progress">
-        <span class="text-dim">
-          {{ state.refreshInfo.done }} / {{ state.refreshInfo.total }}
-          <template v-if="state.refreshInfo.new_articles">
-            · 新增 {{ state.refreshInfo.new_articles }} 篇
-          </template>
-        </span>
-        <span class="bar">
-          <i
-            :style="{
-              width:
-                (state.refreshInfo.total
-                  ? (state.refreshInfo.done / state.refreshInfo.total) * 100
-                  : 0) + '%',
-            }"
-          />
-        </span>
-      </div>
-
-      <div v-else-if="state.error" class="err-box">
-        <span>⚠ {{ state.error }}</span>
-        <button class="ghost small" @click="showSettings = true">去设置</button>
-      </div>
-
-      <div v-else class="status text-mute">
-        {{ state.feeds.length }} 个订阅源
-        <template v-if="state.refreshInfo.errors.length">
-          · <span class="warn">{{ state.refreshInfo.errors.length }} 个源失败</span>
-        </template>
-      </div>
-
-      <span class="spacer" />
-
-      <button class="ghost" title="添加订阅源" @click="openAdd">＋ 订阅源</button>
-      <button class="ghost" title="设置" @click="showSettings = true">⚙</button>
-    </header>
-
     <main class="body">
       <Sidebar
         @add="openAdd"
@@ -235,74 +187,6 @@ async function onFeedSaved() {
   display: flex;
   flex-direction: column;
   overflow: hidden;
-}
-
-.topbar {
-  height: 42px;
-  flex: 0 0 42px;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 0 12px;
-  background: var(--bg-alt);
-  border-bottom: 1px solid var(--border);
-  -webkit-user-select: none;
-  user-select: none;
-}
-.refresh {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  font-size: 12.5px;
-}
-.refresh span {
-  display: inline-block;
-  font-size: 14px;
-}
-
-.progress {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-}
-.bar {
-  display: block;
-  width: 130px;
-  height: 4px;
-  background: var(--panel-2);
-  border-radius: 2px;
-  overflow: hidden;
-}
-.bar i {
-  display: block;
-  height: 100%;
-  background: var(--accent);
-  transition: width 0.25s;
-}
-
-.err-box {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  font-size: 12px;
-  color: var(--warn);
-  min-width: 0;
-}
-.small {
-  font-size: 11.5px;
-  padding: 2px 7px;
-}
-
-.status {
-  font-size: 12px;
-}
-.warn {
-  color: var(--warn);
-}
-
-.spacer {
-  flex: 1;
 }
 
 .body {
