@@ -6,6 +6,7 @@ import { formatTime, stripHtml, truncate } from '@/lib/format'
 
 const { state } = app
 const currentFeedTitle = app.currentFeedTitle
+const currentUnread = app.currentUnread
 const hasMore = app.hasMore
 const listEl = ref<HTMLElement | null>(null)
 
@@ -66,6 +67,7 @@ function snippet(a: Article): string {
     <header class="list-head">
       <div class="lh-title">
         <span class="truncate">{{ currentFeedTitle }}</span>
+        <span class="unread-count" :class="{ has: currentUnread > 0 }">未读 {{ currentUnread }}</span>
       </div>
       <div class="lh-actions">
         <div class="filter-group">
@@ -148,6 +150,21 @@ function snippet(a: Article): string {
   min-width: 0;
   font-weight: 600;
   font-size: 13.5px;
+}
+.lh-title > .truncate {
+  flex: 1;
+  min-width: 0;
+}
+.unread-count {
+  flex: none;
+  font-size: 12px;
+  font-weight: 500;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-mute);
+  white-space: nowrap;
+}
+.unread-count.has {
+  color: var(--accent);
 }
 .lh-actions {
   display: flex;

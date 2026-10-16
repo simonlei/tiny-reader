@@ -113,7 +113,7 @@ function isCollapsed(name: string) {
     <div class="sidebar-foot">
       <button class="ghost" @click="emit('importOpml')">导入 OPML</button>
       <div class="stat text-mute">
-        共 {{ state.stats.total }} 篇 · 未读 {{ state.stats.unread }}
+        共 {{ state.stats.total }} 篇
       </div>
     </div>
   </aside>

@@ -2,6 +2,7 @@ import { computed, reactive } from 'vue'
 import * as api from '@/api/client'
 import { ApiError } from '@/api/client'
 import type { Article, ArticleFilter, Feed, RefreshStatus, Stats } from '@/api/types'
+import { listUnreadCount } from '@/lib/listUnread'
 
 const PAGE_SIZE = 50
 /** 选中后多久自动标记已读（毫秒） */
@@ -67,6 +68,11 @@ export const currentFeedTitle = computed(() => {
   if (state.selectedFeedId == null) return '全部文章'
   return state.feeds.find((f) => f.id === state.selectedFeedId)?.title ?? '全部文章'
 })
+
+/** 当前文章列表对应的未读数，显示在列表头部 */
+export const currentUnread = computed(() =>
+  listUnreadCount(state.selectedFeedId, state.stats.unread, state.feeds),
+)
 
 export const totalUnread = computed(() =>
   state.feeds.reduce((sum, f) => sum + (f.unread_count || 0), 0),

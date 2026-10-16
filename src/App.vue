@@ -183,7 +183,7 @@ async function onFeedSaved() {
       </div>
 
       <div v-else class="status text-mute">
-        {{ state.feeds.length }} 个订阅源 · 未读 {{ state.stats.unread }}
+        {{ state.feeds.length }} 个订阅源
         <template v-if="state.refreshInfo.errors.length">
           · <span class="warn">{{ state.refreshInfo.errors.length }} 个源失败</span>
         </template>
