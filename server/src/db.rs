@@ -223,6 +223,7 @@ impl Db {
     ///
     /// 同一源在 6 小时内（按发布时间，没有则按抓取时间）若已有相同或接近的标题，
     /// 后到的那一篇也会被忽略。接近的判定见 [`titles_near_duplicate`]。
+    /// Google 新闻标题末尾的「 - 来源」会先去掉再比较。
     pub fn insert_articles(&self, feed_id: i64, items: &[NewArticle]) -> Result<usize> {
         if items.is_empty() {
             return Ok(0);
@@ -245,7 +246,7 @@ impl Db {
             rows.into_iter()
                 .filter_map(|(title, ts)| {
                     Some(TitleStamp {
-                        key: title_key(&title)?,
+                        keys: title_keys(&title)?,
                         at: parse_dt(ts).unwrap_or(now),
                     })
                 })
@@ -274,10 +275,11 @@ impl Db {
             for idx in order {
                 let a = &items[idx];
                 let at = article_time(a.published_at.as_deref(), now);
-                if let Some(key) = title_key(&a.title) {
-                    if kept.iter().any(|k| {
-                        within_dedup_window(k.at, at) && normalized_titles_close(&k.key, &key)
-                    }) {
+                if let Some(keys) = title_keys(&a.title) {
+                    if kept
+                        .iter()
+                        .any(|k| within_dedup_window(k.at, at) && title_keys_close(&k.keys, &keys))
+                    {
                         skipped += 1;
                         continue;
                     }
@@ -294,7 +296,7 @@ impl Db {
                     ])?;
                     if n > 0 {
                         count += n;
-                        kept.push(TitleStamp { key, at });
+                        kept.push(TitleStamp { keys, at });
                     }
                 } else {
                     let n = stmt.execute(params![
@@ -586,10 +588,20 @@ const TITLE_DEDUP_WINDOW_HOURS: i64 = 6;
 /// 归一化后允许多出来的连续字符数。用来吃掉「搜狐 / 搜狐网」这种站点尾巴。
 const TITLE_NEAR_MAX_EXTRA: usize = 3;
 /// 短标题只认完全相同，避免「上涨 / 上涨了」这类被误伤。
+/// 去掉来源后缀后，正文也要达到这个长度，才把后缀当成来源而不是标题的一部分。
 const TITLE_NEAR_MIN_CHARS: usize = 10;
+/// 来源名最长字符数。「21世纪经济报道」这类媒体名放得下，整句标题放不下。
+const OUTLET_MAX_CHARS: usize = 32;
+
+struct TitleKeys {
+    /// 整条标题归一化后的结果，保留来源后缀。
+    full: String,
+    /// 去掉末尾来源后的正文。没有可识别的来源时与 `full` 相同。
+    head: String,
+}
 
 struct TitleStamp {
-    key: String,
+    keys: TitleKeys,
     at: DateTime<Utc>,
 }
 
@@ -605,11 +617,171 @@ fn within_dedup_window(a: DateTime<Utc>, b: DateTime<Utc>) -> bool {
 }
 
 /// 标题相同，或去掉空白和标点后只差一小段连续字符（加在开头、中间或结尾都行）。
+/// 末尾如果是媒体来源（「 - 新华网」「 - ThePaper.cn」），比较时也会丢掉再看一遍。
 fn titles_near_duplicate(a: &str, b: &str) -> bool {
-    match (title_key(a), title_key(b)) {
-        (Some(x), Some(y)) => normalized_titles_close(&x, &y),
+    match (title_keys(a), title_keys(b)) {
+        (Some(x), Some(y)) => title_keys_close(&x, &y),
         _ => false,
     }
+}
+
+fn title_keys_close(a: &TitleKeys, b: &TitleKeys) -> bool {
+    normalized_titles_close(&a.full, &b.full) || normalized_titles_close(&a.head, &b.head)
+}
+
+fn title_keys(title: &str) -> Option<TitleKeys> {
+    let full = title_key(title)?;
+    let head = title_key(strip_outlet_suffix(title.trim())).unwrap_or_else(|| full.clone());
+    Some(TitleKeys { full, head })
+}
+
+/// 去掉 Google 新闻那种「标题 - 来源」。认不出来源时原样返回。
+fn strip_outlet_suffix(title: &str) -> &str {
+    let Some((head, tail)) = split_outlet(title) else {
+        return title;
+    };
+    if head.chars().count() >= TITLE_NEAR_MIN_CHARS && looks_like_outlet(tail) {
+        head
+    } else {
+        title
+    }
+}
+
+fn split_outlet(title: &str) -> Option<(&str, &str)> {
+    const SEPS: &[&str] = &[" - ", " — ", " – ", " － ", " | ", " ｜ "];
+    let mut best: Option<(usize, usize)> = None;
+    for sep in SEPS {
+        if let Some(i) = title.rfind(sep) {
+            let end = i + sep.len();
+            if best.map(|(at, _)| i >= at).unwrap_or(true) {
+                best = Some((i, end));
+            }
+        }
+    }
+    let (at, end) = best?;
+    let head = title[..at].trim();
+    let tail = title[end..].trim();
+    if head.is_empty() || tail.is_empty() {
+        None
+    } else {
+        Some((head, tail))
+    }
+}
+
+fn looks_like_outlet(s: &str) -> bool {
+    let s = s.trim();
+    let n = s.chars().count();
+    if n < 2 || n > OUTLET_MAX_CHARS || s.chars().any(is_clause_punct) {
+        return false;
+    }
+    if ends_with_outlet_marker(s) || looks_like_latin_outlet(s) {
+        return true;
+    }
+    if looks_like_digit_brand(s) || looks_like_mixed_brand(s) {
+        return true;
+    }
+    // 新浪、网易、搜狐这种没有「网 / 报」尾巴的短名。
+    // 「美股大跌」含涨跌结果字，不当成来源。
+    n <= 4 && s.chars().all(is_cjk) && !s.chars().any(is_result_char)
+}
+
+fn looks_like_latin_outlet(s: &str) -> bool {
+    !s.chars().any(is_cjk)
+        && s.chars().any(|c| c.is_ascii_alphabetic())
+        && s.chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | ' ' | '&' | '\'' | '-'))
+}
+
+/// 「36氪」：数字加一个汉字。
+fn looks_like_digit_brand(s: &str) -> bool {
+    let mut cjk = 0;
+    let mut digits = 0;
+    for c in s.chars() {
+        if is_cjk(c) {
+            cjk += 1;
+        } else if c.is_ascii_digit() {
+            digits += 1;
+        } else {
+            return false;
+        }
+    }
+    digits > 0 && cjk == 1
+}
+
+fn looks_like_mixed_brand(s: &str) -> bool {
+    let n = s.chars().count();
+    if n > 8 {
+        return false;
+    }
+    let has_cjk = s.chars().any(is_cjk);
+    let has_latin = s.chars().any(|c| c.is_ascii_alphabetic());
+    has_cjk
+        && has_latin
+        && !s.chars().any(is_result_char)
+        && s.chars().all(|c| is_cjk(c) || c.is_ascii_alphanumeric())
+}
+
+fn ends_with_outlet_marker(s: &str) -> bool {
+    const MARKERS: &[&str] = &[
+        "网",
+        "报",
+        "報",
+        "社",
+        "刊",
+        "新闻",
+        "新聞",
+        "时报",
+        "時報",
+        "日报",
+        "日報",
+        "晚报",
+        "晚報",
+        "周刊",
+        "见闻",
+        "見聞",
+        "财经",
+        "財經",
+        "传媒",
+        "傳媒",
+        "在线",
+        "在線",
+        "电视台",
+    ];
+    MARKERS.iter().any(|m| s.ends_with(m))
+}
+
+fn is_cjk(c: char) -> bool {
+    matches!(c as u32, 0x4E00..=0x9FFF)
+}
+
+fn is_clause_punct(c: char) -> bool {
+    matches!(
+        c,
+        '，' | '。'
+            | '！'
+            | '？'
+            | '；'
+            | '、'
+            | ','
+            | '!'
+            | '?'
+            | ';'
+            | ':'
+            | '：'
+            | '（'
+            | '）'
+            | '('
+            | ')'
+            | '「'
+            | '」'
+            | '"'
+            | '“'
+            | '”'
+    )
+}
+
+fn is_result_char(c: char) -> bool {
+    matches!(c, '涨' | '跌' | '升' | '降' | '弹' | '暴' | '增' | '减')
 }
 
 /// `(无标题)` 是抓取时的占位，不参与去重，否则无标题文章会互相挡住。
@@ -703,10 +875,38 @@ mod tests {
     }
 
     #[test]
+    fn google_news_source_counts_as_near_duplicate() {
+        assert!(titles_near_duplicate(
+            "国际油价15日涨跌不一 - 新华网",
+            "国际油价15日涨跌不一 - ThePaper.cn",
+        ));
+        assert!(titles_near_duplicate(
+            "国际油价15日涨跌不一 - 新浪",
+            "国际油价15日涨跌不一 - 网易",
+        ));
+        assert!(titles_near_duplicate(
+            "国际油价15日涨跌不一",
+            "国际油价15日涨跌不一 - ThePaper.cn",
+        ));
+        assert!(titles_near_duplicate(
+            "国际油价15日涨跌不一 - 36氪",
+            "国际油价15日涨跌不一 — Reuters",
+        ));
+    }
+
+    #[test]
     fn distinct_headlines_stay() {
         assert!(!titles_near_duplicate(
             "伊朗袭击行动升级，一艘集装箱船于霍尔木兹海峡沉没",
             "伊朗袭击行动升级，两艘油轮在霍尔木兹海峡遭袭",
+        ));
+        assert!(!titles_near_duplicate(
+            "会议在北京召开并公布完整方案 - 新华网",
+            "会议在上海召开并公布完整方案 - ThePaper.cn",
+        ));
+        assert!(!titles_near_duplicate(
+            "特朗普称将加税并引发市场波动 - 美股大跌",
+            "特朗普称将加税并引发市场波动 - 美股反弹",
         ));
         assert!(!titles_near_duplicate(
             "会议在北京召开并公布完整方案",
@@ -839,6 +1039,70 @@ mod tests {
             );
         }
         assert_eq!(guids(other.id), vec!["g-other-feed".to_string()]);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+    }
+
+    #[test]
+    fn skips_same_headline_with_different_google_news_source() {
+        let path = std::env::temp_dir().join(format!(
+            "tiny-reader-title-dedup-source-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&path).unwrap();
+        let feed = db
+            .insert_feed(&NewFeed {
+                url: "https://news.google.com/rss".into(),
+                title: Some("Google News".into()),
+                category: None,
+            })
+            .unwrap();
+        let t0 = Utc::now();
+        assert_eq!(
+            db.insert_articles(
+                feed.id,
+                &[article(
+                    "oil-xinhua",
+                    "国际油价15日涨跌不一 - 新华网",
+                    Some(t0.to_rfc3339()),
+                )],
+            )
+            .unwrap(),
+            1
+        );
+        assert_eq!(
+            db.insert_articles(
+                feed.id,
+                &[article(
+                    "oil-thepaper",
+                    "国际油价15日涨跌不一 - ThePaper.cn",
+                    Some((t0 + Duration::hours(1)).to_rfc3339()),
+                )],
+            )
+            .unwrap(),
+            0
+        );
+        let guids: Vec<String> = db
+            .list_articles(&ArticleQuery {
+                feed_id: Some(feed.id),
+                limit: 10,
+                ..ArticleQuery::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|a| a.guid)
+            .collect();
+        assert_eq!(guids, vec!["oil-xinhua".to_string()]);
 
         drop(db);
         let _ = std::fs::remove_file(&path);
