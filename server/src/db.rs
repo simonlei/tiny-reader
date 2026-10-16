@@ -248,6 +248,7 @@ impl Db {
             rows.into_iter()
                 .filter_map(|(title, ts)| {
                     Some(TitleStamp {
+                        title: title.clone(),
                         keys: title_keys(&title)?,
                         at: parse_dt(ts).unwrap_or(now),
                     })
@@ -265,7 +266,7 @@ impl Db {
 
         let tx = conn.transaction()?;
         let mut count = 0usize;
-        let mut skipped = 0usize;
+        let mut skipped_pairs: Vec<(String, String)> = Vec::new();
         {
             let mut stmt = tx.prepare(
                 r#"
@@ -278,11 +279,10 @@ impl Db {
                 let a = &items[idx];
                 let at = article_time(a.published_at.as_deref(), now);
                 if let Some(keys) = title_keys(&a.title) {
-                    if kept
-                        .iter()
-                        .any(|k| within_dedup_window(k.at, at) && title_keys_close(&k.keys, &keys))
-                    {
-                        skipped += 1;
+                    if let Some(prev) = kept.iter().find(|k| {
+                        within_dedup_window(k.at, at) && title_keys_close(&k.keys, &keys)
+                    }) {
+                        skipped_pairs.push((prev.title.clone(), a.title.clone()));
                         continue;
                     }
                     let n = stmt.execute(params![
@@ -298,7 +298,11 @@ impl Db {
                     ])?;
                     if n > 0 {
                         count += n;
-                        kept.push(TitleStamp { keys, at });
+                        kept.push(TitleStamp {
+                            title: a.title.clone(),
+                            keys,
+                            at,
+                        });
                     }
                 } else {
                     let n = stmt.execute(params![
@@ -317,8 +321,15 @@ impl Db {
             }
         }
         tx.commit()?;
-        if skipped > 0 {
-            tracing::info!(feed_id, skipped, "同一源 6 小时内标题相同或接近，已忽略");
+        let skipped = skipped_pairs.len();
+        for (kept_title, ignored_title) in &skipped_pairs {
+            tracing::info!(
+                feed_id,
+                skipped,
+                kept = kept_title.as_str(),
+                ignored = ignored_title.as_str(),
+                "同一源 6 小时内标题相同或接近，已忽略"
+            );
         }
         Ok(count)
     }
@@ -604,6 +615,7 @@ struct TitleKeys {
 }
 
 struct TitleStamp {
+    title: String,
     keys: TitleKeys,
     at: DateTime<Utc>,
 }
@@ -921,6 +933,66 @@ mod tests {
     }
 
     #[test]
+    fn logs_both_titles_when_a_near_duplicate_is_skipped() {
+        let path = std::env::temp_dir().join(format!(
+            "tiny-reader-title-dedup-log-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&path).unwrap();
+        let feed = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/log.xml".into(),
+                title: Some("Log".into()),
+                category: None,
+            })
+            .unwrap();
+        let t0 = Utc::now();
+        db.insert_articles(
+            feed.id,
+            &[article("keep", SOHU, Some(t0.to_rfc3339()))],
+        )
+        .unwrap();
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || LogBuf(writer.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            db.insert_articles(
+                feed.id,
+                &[article(
+                    "drop",
+                    SOHU_NET,
+                    Some((t0 + Duration::hours(1)).to_rfc3339()),
+                )],
+            )
+            .unwrap();
+        });
+
+        let log = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            log.contains(SOHU) && log.contains(SOHU_NET),
+            "日志应同时带上保留和被忽略的标题，实际：{log}"
+        );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+    }
+
+    #[test]
     fn skips_later_near_title_from_same_feed_within_six_hours() {
         let path = std::env::temp_dir().join(format!(
             "tiny-reader-title-dedup-{}-{}.db",
@@ -1165,6 +1237,18 @@ mod tests {
             let mut side = path.clone().into_os_string();
             side.push(suffix);
             let _ = std::fs::remove_file(side);
+        }
+    }
+
+    struct LogBuf(std::sync::Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for LogBuf {
+        fn write(&mut self, data: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
         }
     }
 

@@ -50,3 +50,19 @@ timeout_secs = 60
 
 # Radar 规则的缓存有效期（秒），过期后在后台重新拉取。
 radar_cache_secs = 43200
+
+[update]
+# 自动检查 GitHub Release，有更新的稳定版就替换服务端二进制并重启。
+# 只替换可执行文件，不会覆盖 config.toml 和数据库。
+# 开发构建（cargo run，路径里有 target）以及非 Linux x86_64 只提示、不替换。
+# 环境变量 TINY_READER_NO_UPDATE=1 可以临时关掉。
+enabled = true
+
+# 检查间隔（秒）。默认 6 小时，运行时不会短于 5 分钟。
+interval_secs = 21600
+
+# GitHub 仓库，格式 owner/name。
+repo = "simonlei/tiny-reader"
+
+# 私有仓库才需要。公开仓库留空。也可用环境变量 TINY_READER_GITHUB_TOKEN 覆盖。
+github_token = ""

@@ -21,6 +21,8 @@ pub struct Config {
     pub refresh: RefreshConfig,
     #[serde(default)]
     pub rsshub: RsshubConfig,
+    #[serde(default)]
+    pub update: UpdateConfig,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -116,6 +118,16 @@ fn default_radar_cache_secs() -> u64 {
     12 * 60 * 60
 }
 
+fn default_update_enabled() -> bool {
+    true
+}
+fn default_update_interval_secs() -> u64 {
+    6 * 60 * 60
+}
+fn default_update_repo() -> String {
+    "simonlei/tiny-reader".into()
+}
+
 impl Default for ServerConfig {
     fn default() -> Self {
         Self {
@@ -149,6 +161,37 @@ impl Default for RefreshConfig {
         }
     }
 }
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UpdateConfig {
+    /// 是否自动检查 GitHub Release 并在有新版本时升级。
+    #[serde(default = "default_update_enabled")]
+    pub enabled: bool,
+
+    /// 检查间隔（秒）。运行时不会短于 5 分钟。
+    #[serde(default = "default_update_interval_secs")]
+    pub interval_secs: u64,
+
+    /// GitHub 仓库，格式 `owner/name`。
+    #[serde(default = "default_update_repo")]
+    pub repo: String,
+
+    /// 私有仓库用的 token。公开仓库留空。
+    /// 也可用环境变量 `TINY_READER_GITHUB_TOKEN` 覆盖。
+    #[serde(default)]
+    pub github_token: String,
+}
+
+impl Default for UpdateConfig {
+    fn default() -> Self {
+        Self {
+            enabled: default_update_enabled(),
+            interval_secs: default_update_interval_secs(),
+            repo: default_update_repo(),
+            github_token: String::new(),
+        }
+    }
+}
+
 impl Default for RsshubConfig {
     fn default() -> Self {
         Self {
@@ -166,6 +209,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             refresh: RefreshConfig::default(),
             rsshub: RsshubConfig::default(),
+            update: UpdateConfig::default(),
         }
     }
 }
@@ -262,6 +306,15 @@ pub fn load(explicit: Option<PathBuf>) -> Result<(Config, PathBuf)> {
     }
     if let Ok(b) = std::env::var("TINY_READER_RSSHUB") {
         cfg.rsshub.base_url = b;
+    }
+    if let Ok(t) = std::env::var("TINY_READER_GITHUB_TOKEN") {
+        if !t.trim().is_empty() {
+            cfg.update.github_token = t;
+        }
+    }
+    if crate::update::update_disabled_by_env(std::env::var("TINY_READER_NO_UPDATE").ok().as_deref())
+    {
+        cfg.update.enabled = false;
     }
 
     if cfg.auth.token.trim().is_empty() {

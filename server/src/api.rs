@@ -186,7 +186,11 @@ async fn root() -> &'static str {
 }
 
 async fn health() -> Json<serde_json::Value> {
-    Json(json!({ "ok": true, "service": "tiny-reader-server" }))
+    Json(json!({
+        "ok": true,
+        "service": "tiny-reader-server",
+        "version": env!("CARGO_PKG_VERSION"),
+    }))
 }
 
 // ------------------------------------------------------------------ 订阅源 CRUD

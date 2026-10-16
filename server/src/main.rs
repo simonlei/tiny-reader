@@ -5,6 +5,7 @@ mod models;
 mod opml;
 mod radar;
 mod rss;
+mod update;
 
 use std::sync::{Arc, Mutex};
 
@@ -85,6 +86,16 @@ async fn main() -> Result<()> {
         let secs = cfg.refresh.auto_interval_secs;
         spawn_auto_refresh(state.clone(), std::time::Duration::from_secs(secs));
         tracing::info!("已开启定时刷新，间隔 {} 秒", secs);
+    }
+
+    if cfg.update.enabled {
+        let secs = update::effective_interval_secs(cfg.update.interval_secs);
+        tracing::info!(
+            "已开启自动升级，每 {} 秒检查 https://github.com/{}/releases",
+            secs,
+            cfg.update.repo.trim()
+        );
+        update::spawn(cfg.update.clone());
     }
 
     let app = api::build_router(state);

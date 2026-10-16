@@ -57,6 +57,11 @@ roxmltree = "0.20"
 # 生成默认 token
 rand = "0.8"
 
+# 服务端自升级：解压 GitHub Release 里的 tar.gz，并校验 sha256
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+tar = "0.4"
+sha2 = "0.10"
+
 [profile.release]
 opt-level = "s"
 lto = true

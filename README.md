@@ -53,6 +53,7 @@ tiny-reader/
 │  │  ├─ rss.rs             # reqwest + feed-rs 拉取解析，带 ETag/Last-Modified
 │  │  ├─ opml.rs            # OPML 导入导出
 │  │  ├─ api.rs             # Axum 路由 + token 鉴权中间件
+│  │  ├─ update.rs          # 读取 GitHub Release 并替换服务端二进制
 │  │  └─ models.rs
 │  └─ config.example.toml
 ├─ dev.bat / dev.sh         # 启动客户端开发模式（cmd / Git Bash）
@@ -134,8 +135,24 @@ cd android
 | `rsshub.base_url` | 自部署 RSSHub 实例地址，留空 = 关闭 RSSHub 支持 |
 | `rsshub.timeout_secs` | 拉取 RSSHub 路由的超时（秒），实时抓取比普通 RSS 慢，默认 60 |
 | `rsshub.radar_cache_secs` | Radar 规则缓存有效期（秒），默认 12 小时 |
+| `update.enabled` | 是否自动升级服务端，默认开启。`TINY_READER_NO_UPDATE=1` 可临时关闭 |
+| `update.interval_secs` | 检查 GitHub Release 的间隔（秒），默认 6 小时，最短 5 分钟 |
+| `update.repo` | GitHub 仓库，默认 `simonlei/tiny-reader` |
+| `update.github_token` | 私有仓库的 token，公开仓库留空。也可用 `TINY_READER_GITHUB_TOKEN` |
 
-环境变量：`TINY_READER_CONFIG`（配置文件路径）、`TINY_READER_TOKEN`、`TINY_READER_HOST`、`TINY_READER_PORT`、`TINY_READER_DB`、`TINY_READER_RSSHUB`。
+环境变量：`TINY_READER_CONFIG`（配置文件路径）、`TINY_READER_TOKEN`、`TINY_READER_HOST`、`TINY_READER_PORT`、`TINY_READER_DB`、`TINY_READER_RSSHUB`、`TINY_READER_GITHUB_TOKEN`、`TINY_READER_NO_UPDATE`。
+
+### 服务端自动升级
+
+服务端启动约 20 秒后，会请求 `update.repo` 的 GitHub latest release。远程版本比当前二进制新，并且当前进程是 Linux x86_64 正式包时：
+
+1. 下载 `tiny-reader-server-linux-x86_64-musl.tar.gz`
+2. 用该资源在 GitHub API 上的 `sha256` digest 校验
+3. 只解出 `tiny-reader-server`，不覆盖 `config.toml` 和数据库
+4. 先跑一遍新二进制的 `--version`，确认版本号对得上
+5. 把当前文件挪成同目录的 `tiny-reader-server.old`，换上新文件，再原地重启
+
+`cargo run`（可执行文件路径里有 `target`）以及 Windows / macOS 只会在日志里提示有新版本，不会替换。已经在跑的旧版本要先手动换成带这个功能的发布包，之后的版本才会自己升上去。
 
 ### 用 RSSHub 订阅不支持 RSS 的站点
 
