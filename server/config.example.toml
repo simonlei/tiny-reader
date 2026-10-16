@@ -51,6 +51,12 @@ timeout_secs = 60
 # Radar 规则的缓存有效期（秒），过期后在后台重新拉取。
 radar_cache_secs = 43200
 
+[jandan]
+# 浏览器登录煎蛋后的 Cookie，用来把日报翻页拉全。留空则只有热度前 10 条。
+# 也可用环境变量 TINY_READER_JANDAN_COOKIE 覆盖。
+# 例：cookie = "egg_auth=...; egg_login_nickname=...; egg_login_uid=..."
+cookie = ""
+
 [update]
 # 自动检查 GitHub Release，有更新的稳定版就替换服务端二进制并重启。
 # 只替换可执行文件，不会覆盖 config.toml 和数据库。

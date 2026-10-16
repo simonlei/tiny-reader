@@ -22,6 +22,8 @@ pub struct Config {
     #[serde(default)]
     pub rsshub: RsshubConfig,
     #[serde(default)]
+    pub jandan: JandanConfig,
+    #[serde(default)]
     pub update: UpdateConfig,
 }
 
@@ -162,6 +164,22 @@ impl Default for RefreshConfig {
     }
 }
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct JandanConfig {
+    /// 煎蛋登录 Cookie（egg_auth、egg_login_uid 等）。留空则日报只能拉到热度前 10 条。
+    /// 也可用环境变量 `TINY_READER_JANDAN_COOKIE` 覆盖。
+    #[serde(default)]
+    pub cookie: String,
+}
+
+impl Default for JandanConfig {
+    fn default() -> Self {
+        Self {
+            cookie: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UpdateConfig {
     /// 是否自动检查 GitHub Release 并在有新版本时升级。
     #[serde(default = "default_update_enabled")]
@@ -209,6 +227,7 @@ impl Default for Config {
             storage: StorageConfig::default(),
             refresh: RefreshConfig::default(),
             rsshub: RsshubConfig::default(),
+            jandan: JandanConfig::default(),
             update: UpdateConfig::default(),
         }
     }
@@ -306,6 +325,11 @@ pub fn load(explicit: Option<PathBuf>) -> Result<(Config, PathBuf)> {
     }
     if let Ok(b) = std::env::var("TINY_READER_RSSHUB") {
         cfg.rsshub.base_url = b;
+    }
+    if let Ok(c) = std::env::var("TINY_READER_JANDAN_COOKIE") {
+        if !c.trim().is_empty() {
+            cfg.jandan.cookie = c;
+        }
     }
     if let Ok(t) = std::env::var("TINY_READER_GITHUB_TOKEN") {
         if !t.trim().is_empty() {

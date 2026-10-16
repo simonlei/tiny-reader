@@ -22,6 +22,13 @@ const candidates = ref<RssCandidate[]>([])
 
 const isRsshubUrl = (s: string) => s.toLowerCase().startsWith('rsshub:')
 
+/** 日报：显式 daily: 前缀，或路径以 /date/YYYY-MM-DD 结尾 */
+const isDailyUrl = (s: string) => {
+  const t = s.trim().toLowerCase()
+  if (t.startsWith('daily:')) return true
+  return /\/date\/\d{4}-\d{2}-\d{2}\/?([?#]|$)/.test(t)
+}
+
 watch(
   () => [props.open, props.feed] as const,
   () => {
@@ -82,7 +89,7 @@ async function runSubmit(raw: string, allowDiscover: boolean) {
         category: category.value.trim(),
       })
     } else {
-      if (allowDiscover && !isRsshubUrl(raw)) {
+      if (allowDiscover && !isRsshubUrl(raw) && !isDailyUrl(raw)) {
         // 探测失败（比如服务端没配 RSSHub）不影响原来的直接添加流程
         try {
           const res = await app.discoverFeeds(raw)
@@ -135,7 +142,7 @@ async function doDelete() {
     @close="emit('close')"
   >
     <div class="field">
-      <label>订阅源地址 (RSS / Atom / 任意网页)</label>
+      <label>订阅源地址 (RSS / Atom / 日报 / 任意网页)</label>
       <input
         v-model="url"
         placeholder="https://example.com/feed.xml"
@@ -146,6 +153,9 @@ async function doDelete() {
       <p class="tip text-mute">
         不加 <code>https://</code> 也可以，服务端会自动补上。粘贴普通网页地址时，会用
         RSSHub 自动找出可用路由；也可以直接填 <code>rsshub://zhihu/daily</code>。
+        没有 RSS、但能按日期打开的日报，直接粘贴带
+        <code>/date/2026-10-15</code> 的地址，或加 <code>daily:</code> 前缀。每次刷新拉东八区的昨天，例如
+        <code>daily:https://jandan.net/new/daily/date/2026-10-15</code>。
       </p>
     </div>
 

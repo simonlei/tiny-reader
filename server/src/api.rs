@@ -312,11 +312,16 @@ async fn update_feed(
     Path(id): Path<i64>,
     Json(patch): Json<UpdateFeed>,
 ) -> Result<Json<Feed>, AppError> {
-    if let Some(u) = &patch.url {
-        if normalize_url(u).is_none() {
-            return Err(AppError::bad_request("URL 不合法"));
+    let patch = if let Some(u) = &patch.url {
+        let url = normalize_url(u).ok_or_else(|| AppError::bad_request("URL 不合法"))?;
+        UpdateFeed {
+            url: Some(url),
+            title: patch.title,
+            category: patch.category,
         }
-    }
+    } else {
+        patch
+    };
     st.db
         .update_feed(id, &patch)
         .map_err(|e| AppError::internal(e.to_string()))?
@@ -838,6 +843,9 @@ pub fn normalize_url(input: &str) -> Option<String> {
     if s.is_empty() {
         return None;
     }
+    if let Some(stored) = crate::daily::normalize_daily_input(s) {
+        return Some(stored);
+    }
     // RSSHub 路由：rsshub:/zhihu/daily、rsshub://zhihu/daily 都收敛成 rsshub://zhihu/daily。
     // 存的是逻辑地址而不是展开后的 URL，这样换实例只需改配置，不用改库里的源。
     if let Some(route) = s.strip_prefix("rsshub:") {
@@ -857,6 +865,11 @@ pub fn normalize_url(input: &str) -> Option<String> {
     } else {
         format!("https://{s}")
     };
+
+    // 裸域名补上协议之后，再认一次 /date/YYYY-MM-DD 这种日报地址
+    if let Some(stored) = crate::daily::normalize_daily_input(&s) {
+        return Some(stored);
+    }
 
     match reqwest::Url::parse(&s) {
         Ok(u) if !u.host_str().unwrap_or("").is_empty() => Some(u.to_string()),
@@ -923,6 +936,27 @@ mod tests {
         assert_eq!(
             normalize_url("example.com/feed.xml").as_deref(),
             Some("https://example.com/feed.xml")
+        );
+    }
+
+    #[test]
+    fn normalize_daily_sample_and_bare_date_path() {
+        assert_eq!(
+            normalize_url("daily:https://jandan.net/new/daily/date/2026-10-15").as_deref(),
+            Some("daily://https://jandan.net/new/daily/date/{date}")
+        );
+        assert_eq!(
+            normalize_url("https://jandan.net/new/daily/date/2026-10-15").as_deref(),
+            Some("daily://https://jandan.net/new/daily/date/{date}")
+        );
+        // 博客文章路径里碰巧有日期，仍然是普通地址
+        assert_eq!(
+            normalize_url("https://example.com/posts/2026-10-15").as_deref(),
+            Some("https://example.com/posts/2026-10-15")
+        );
+        assert_eq!(
+            normalize_url("jandan.net/new/daily/date/2026-10-15").as_deref(),
+            Some("daily://https://jandan.net/new/daily/date/{date}")
         );
     }
 }

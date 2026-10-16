@@ -1,5 +1,6 @@
 mod api;
 mod config;
+mod daily;
 mod db;
 mod models;
 mod opml;
@@ -56,9 +57,13 @@ async fn main() -> Result<()> {
             cfg.refresh.user_agent.clone(),
             api::request_timeout(&cfg),
             cfg.rsshub.base_url_trimmed(),
+            cfg.jandan.cookie.clone(),
         )
         .context("初始化 HTTP 客户端失败")?,
     );
+    if !cfg.jandan.cookie.trim().is_empty() {
+        tracing::info!("煎蛋日报将使用登录 Cookie 翻页");
+    }
 
     let radar = Arc::new(radar::Radar::new(&cfg.rsshub).context("初始化 RSSHub Radar 失败")?);
     if cfg.rsshub.enabled() {

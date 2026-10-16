@@ -2,9 +2,12 @@ use std::time::Duration;
 
 use chrono::Utc;
 use feed_rs::parser;
-use reqwest::header::{HeaderMap, HeaderValue, IF_MODIFIED_SINCE, IF_NONE_MATCH, USER_AGENT};
+use reqwest::header::{
+    HeaderMap, HeaderValue, COOKIE, IF_MODIFIED_SINCE, IF_NONE_MATCH, REFERER, USER_AGENT,
+};
 use reqwest::Client;
 
+use crate::daily::{self, DailyEdition, DailyRequest};
 use crate::db::{FeedTarget, NewArticle};
 
 /// 拉取结果
@@ -30,6 +33,8 @@ pub struct Fetcher {
     user_agent: String,
     /// 自部署 RSSHub 实例地址（去尾斜杠），为空表示未启用
     rsshub_base: String,
+    /// 煎蛋登录 Cookie。只发给 jandan.net，用来翻页；空字符串表示不登录。
+    jandan_cookie: String,
 }
 
 impl Fetcher {
@@ -37,6 +42,7 @@ impl Fetcher {
         user_agent: String,
         timeout: Duration,
         rsshub_base: String,
+        jandan_cookie: String,
     ) -> Result<Self, reqwest::Error> {
         let client = Client::builder()
             .timeout(timeout)
@@ -48,6 +54,7 @@ impl Fetcher {
             client,
             user_agent,
             rsshub_base,
+            jandan_cookie,
         })
     }
 
@@ -66,6 +73,11 @@ impl Fetcher {
         etag: Option<&str>,
         last_modified: Option<&str>,
     ) -> Result<FetchOutcome, String> {
+        // 日报不走 RSS 解析，也不用上次的 ETag：每天请求的地址都不一样。
+        if daily::is_stored_daily(url) {
+            return self.fetch_daily(url).await;
+        }
+
         // 逻辑 URL -> 实际请求地址。放在最前面，add_feed / refresh 两条路径都会经过这里。
         // 记住「原本是不是 rsshub://」，出错时才能把路由回显给用户。
         let logical_route = url.strip_prefix("rsshub://");
@@ -131,38 +143,198 @@ impl Fetcher {
             .await
             .map_err(|e| format!("读取响应失败: {e}"))?;
 
-        // feed-rs 2.x：用 Builder 指定 base_uri，相对链接会被补全成绝对地址。
-        // sanitize_content 默认 true，会顺手清掉正文里的危险 HTML。
-        let parsed = parser::Builder::new()
-            .base_uri(Some(url))
-            .build()
-            .parse(&body[..])
-            .map_err(|e| format!("解析 feed 失败: {e}"))?;
-
-        let title = parsed.title.as_ref().map(|t| t.content.trim().to_string());
-        let description = parsed
-            .description
-            .as_ref()
-            .map(|t| t.content.trim().to_string())
-            .filter(|s| !s.is_empty());
-        let site_url = parsed
-            .links
-            .iter()
-            .find(|l| l.rel.as_deref() == Some("alternate"))
-            .or_else(|| parsed.links.first())
-            .map(|l| l.href.clone());
-
-        let entries = parsed.entries.iter().map(entry_to_article).collect();
-
-        Ok(FetchOutcome::Updated(FetchedFeed {
-            title,
-            site_url,
-            description,
-            etag,
-            last_modified,
-            entries,
-        }))
+        parse_feed_body(&url, &body, etag, last_modified).map(FetchOutcome::Updated)
     }
+
+    /// 日报：把 `{date}` 换成东八区的昨天再抓。
+    /// 煎蛋的页面是空壳，正文在热评接口里，而且不带 Referer 会返回空数据。
+    async fn fetch_daily(&self, stored: &str) -> Result<FetchOutcome, String> {
+        let plan = daily::plan_daily_request(stored, Utc::now())?;
+        let edition = match plan {
+            DailyRequest::Jandan { page_url, .. } => {
+                let day = iso_date_in(&page_url)
+                    .ok_or_else(|| "日报地址里没有可识别的日期".to_string())?;
+                let mut entries = Vec::new();
+                let mut seen = std::collections::HashSet::new();
+                let mut total = 0i64;
+                let mut logged_in = false;
+                for requested in 1u32..=20 {
+                    let url = daily::jandan_api_url(day, requested);
+                    let cookie = jandan_cookie_for(&self.jandan_cookie, &url);
+                    let body = self.get_text(&url, Some(&page_url), cookie).await?;
+                    let page = daily::parse_jandan_page(&body)?;
+                    if requested > 1 && page.page != requested as i64 {
+                        // 未登录时第 2 页会退回第 1 页，丢掉这次结果
+                        break;
+                    }
+                    if requested == 1 && page.entries.is_empty() {
+                        return Err("这一天还没有日报内容".into());
+                    }
+                    total = page.total;
+                    logged_in = page.is_login;
+                    let page_len = page.entries.len();
+                    let page_size = page.page_size;
+                    let response_page = page.page;
+                    let mut added = 0usize;
+                    for entry in page.entries {
+                        if seen.insert(entry.guid.clone()) {
+                            entries.push(entry);
+                            added += 1;
+                        }
+                    }
+                    if added == 0
+                        || !daily::jandan_has_more(
+                            requested as i64,
+                            response_page,
+                            page_len,
+                            page_size,
+                            total,
+                            entries.len(),
+                        )
+                    {
+                        break;
+                    }
+                }
+                if entries.is_empty() {
+                    return Err("这一天还没有日报内容".into());
+                }
+                daily::jandan_edition(entries, total, logged_in)
+            }
+            DailyRequest::Page { page_url } => {
+                let body = self.get_text(&page_url, Some(&page_url), None).await?;
+                if looks_like_feed(&body) {
+                    if let Ok(feed) = parse_feed_body(&page_url, body.as_bytes(), None, None) {
+                        return Ok(FetchOutcome::Updated(feed));
+                    }
+                }
+                let day = iso_date_in(&page_url)
+                    .ok_or_else(|| "日报地址里没有可识别的日期".to_string())?;
+                daily::parse_html_daily(&page_url, &body, &daily::published_stamp(day))?
+            }
+        };
+        Ok(FetchOutcome::Updated(edition_to_fetched(edition)))
+    }
+
+    async fn get_text(
+        &self,
+        url: &str,
+        referer: Option<&str>,
+        cookie: Option<&str>,
+    ) -> Result<String, String> {
+        let mut req = self.client.get(url).header(
+            reqwest::header::ACCEPT,
+            "application/json, text/html, application/xhtml+xml, */*",
+        );
+        if let Some(r) = referer {
+            req = req.header(REFERER, r);
+        }
+        if let Some(c) = cookie.filter(|s| !s.trim().is_empty()) {
+            req = req.header(COOKIE, c);
+        }
+        let resp = req.send().await.map_err(|e| format!("请求失败: {e}"))?;
+        let status = resp.status();
+        if !status.is_success() {
+            let body = resp.bytes().await.unwrap_or_default();
+            let detail = describe_http_error(&body);
+            return Err(match detail {
+                Some(d) => format!("HTTP {status}：{d}"),
+                None => format!("HTTP {status}"),
+            });
+        }
+        resp.text().await.map_err(|e| format!("读取响应失败: {e}"))
+    }
+}
+
+fn jandan_cookie_for<'a>(cookie: &'a str, url: &str) -> Option<&'a str> {
+    let cookie = cookie.trim();
+    if cookie.is_empty() {
+        return None;
+    }
+    let parsed = reqwest::Url::parse(url).ok()?;
+    let host = parsed.host_str()?;
+    if host == "jandan.net" || host.ends_with(".jandan.net") {
+        Some(cookie)
+    } else {
+        None
+    }
+}
+
+fn edition_to_fetched(edition: DailyEdition) -> FetchedFeed {
+    FetchedFeed {
+        title: edition.title,
+        site_url: edition.site_url,
+        description: edition.description,
+        etag: None,
+        last_modified: None,
+        entries: edition.entries,
+    }
+}
+
+fn looks_like_feed(body: &str) -> bool {
+    let t = body.trim_start_matches('\u{feff}').trim_start();
+    let head: String = t.chars().take(64).collect();
+    let head = head.to_ascii_lowercase();
+    head.starts_with("<?xml")
+        || head.starts_with("<rss")
+        || head.starts_with("<feed")
+        || head.starts_with('{')
+}
+
+fn iso_date_in(url: &str) -> Option<chrono::NaiveDate> {
+    let b = url.as_bytes();
+    if b.len() < 10 {
+        return None;
+    }
+    for i in 0..=b.len() - 10 {
+        if !url.is_char_boundary(i) {
+            continue;
+        }
+        let Some(slice) = url.get(i..i + 10) else {
+            continue;
+        };
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(slice, "%Y-%m-%d") {
+            return Some(d);
+        }
+    }
+    None
+}
+
+fn parse_feed_body(
+    url: &str,
+    body: &[u8],
+    etag: Option<String>,
+    last_modified: Option<String>,
+) -> Result<FetchedFeed, String> {
+    // feed-rs 2.x：用 Builder 指定 base_uri，相对链接会被补全成绝对地址。
+    // sanitize_content 默认 true，会顺手清掉正文里的危险 HTML。
+    let parsed = parser::Builder::new()
+        .base_uri(Some(url))
+        .build()
+        .parse(body)
+        .map_err(|e| format!("解析 feed 失败: {e}"))?;
+
+    let title = parsed.title.as_ref().map(|t| t.content.trim().to_string());
+    let description = parsed
+        .description
+        .as_ref()
+        .map(|t| t.content.trim().to_string())
+        .filter(|s| !s.is_empty());
+    let site_url = parsed
+        .links
+        .iter()
+        .find(|l| l.rel.as_deref() == Some("alternate"))
+        .or_else(|| parsed.links.first())
+        .map(|l| l.href.clone());
+    let entries = parsed.entries.iter().map(entry_to_article).collect();
+
+    Ok(FetchedFeed {
+        title,
+        site_url,
+        description,
+        etag,
+        last_modified,
+        entries,
+    })
 }
 
 fn entry_to_article(e: &feed_rs::model::Entry) -> NewArticle {
@@ -367,7 +539,7 @@ pub async fn refresh_one(
 
 #[cfg(test)]
 mod tests {
-    use super::{describe_http_error, resolve_rsshub_url};
+    use super::{describe_http_error, jandan_cookie_for, resolve_rsshub_url};
 
     #[test]
     fn resolve_expands_rsshub_route() {
@@ -433,5 +605,53 @@ mod tests {
             Some("rate limited")
         );
         assert_eq!(describe_http_error(b"   ").as_deref(), None);
+    }
+
+    #[test]
+    fn jandan_cookie_stays_on_jandan() {
+        assert_eq!(
+            jandan_cookie_for(
+                "egg_login_uid=1",
+                "https://jandan.net/api/v1/daily-hot/comments"
+            ),
+            Some("egg_login_uid=1")
+        );
+        assert_eq!(
+            jandan_cookie_for("egg_login_uid=1", "https://img.jandan.net/a.jpg"),
+            Some("egg_login_uid=1")
+        );
+        assert_eq!(
+            jandan_cookie_for("egg_login_uid=1", "https://example.com/digest/2026-10-15"),
+            None
+        );
+        assert_eq!(
+            jandan_cookie_for("  ", "https://jandan.net/api/v1/daily-hot/comments"),
+            None
+        );
+    }
+
+    /// 需要环境变量 TINY_READER_JANDAN_COOKIE。平时不跑。
+    #[tokio::test]
+    #[ignore]
+    async fn live_jandan_paginates_with_cookie() {
+        let cookie = std::env::var("TINY_READER_JANDAN_COOKIE").unwrap_or_default();
+        assert!(
+            !cookie.trim().is_empty(),
+            "需要环境变量 TINY_READER_JANDAN_COOKIE"
+        );
+        let fetcher = super::Fetcher::new(
+            "TinyReader/0.1".into(),
+            std::time::Duration::from_secs(30),
+            String::new(),
+            cookie,
+        )
+        .unwrap();
+        let feed = fetcher
+            .discover("daily://https://jandan.net/new/daily/date/{date}")
+            .await
+            .expect("拉取失败");
+        let n = feed.entries.len();
+        eprintln!("登录翻页 {} 篇 {}", n, feed.description.unwrap_or_default());
+        assert!(n > 10, "登录后应该超过未登录的 10 条，实际 {n}");
     }
 }
