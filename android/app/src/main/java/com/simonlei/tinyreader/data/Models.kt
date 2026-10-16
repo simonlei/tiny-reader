@@ -98,6 +98,11 @@ data class OkResult(
 )
 
 @Serializable
+data class MediaHosts(
+    val hosts: List<String> = emptyList(),
+)
+
+@Serializable
 data class RefreshFeedResult(
     val ok: Boolean = false,
     @SerialName("new_articles") val newArticles: Int = 0,

@@ -47,6 +47,9 @@ export const state = reactive({
 
   /** 上一页是否返回满页，仅作兜底 */
   lastPageFull: false,
+
+  /** 服务端配置的图片代理域名。以 . 或 *. 开头表示只匹配子域名。 */
+  mediaHosts: [] as string[],
 })
 
 let autoReadTimer: ReturnType<typeof setTimeout> | undefined
@@ -360,9 +363,19 @@ export async function importOpml(xml: string) {
 /** 首次进入 / 设置变更后的统一入口 */
 export async function bootstrap() {
   try {
-    await Promise.all([loadFeeds(), loadStats()])
+    await Promise.all([loadFeeds(), loadStats(), loadMediaHosts()])
     await loadArticles(true)
   } catch {
     /* 错误已写入 state.error */
+  }
+}
+
+/** 图片代理域名配在服务端，失败时不当成整个阅读器挂了 */
+export async function loadMediaHosts() {
+  try {
+    const res = await api.mediaHosts()
+    state.mediaHosts = res.hosts ?? []
+  } catch {
+    state.mediaHosts = []
   }
 }

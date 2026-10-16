@@ -24,6 +24,8 @@ pub struct Config {
     #[serde(default)]
     pub jandan: JandanConfig,
     #[serde(default)]
+    pub media: MediaConfig,
+    #[serde(default)]
     pub update: UpdateConfig,
 }
 
@@ -179,6 +181,33 @@ impl Default for JandanConfig {
     }
 }
 
+fn default_media_hosts() -> Vec<String> {
+    vec!["img.wangmoyu.com".into(), ".cdn.dfyun.com.cn".into()]
+}
+
+fn default_media_referer() -> String {
+    "https://jandan.net/".into()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MediaConfig {
+    /// 需要代拉的图片域名。精确匹配；以 `.` 或 `*.` 开头表示只匹配子域名。
+    #[serde(default = "default_media_hosts")]
+    pub hosts: Vec<String>,
+    /// 代拉时附加的 Referer。留空则不带。
+    #[serde(default = "default_media_referer")]
+    pub referer: String,
+}
+
+impl Default for MediaConfig {
+    fn default() -> Self {
+        Self {
+            hosts: default_media_hosts(),
+            referer: default_media_referer(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UpdateConfig {
     /// 是否自动检查 GitHub Release 并在有新版本时升级。
@@ -228,6 +257,7 @@ impl Default for Config {
             refresh: RefreshConfig::default(),
             rsshub: RsshubConfig::default(),
             jandan: JandanConfig::default(),
+            media: MediaConfig::default(),
             update: UpdateConfig::default(),
         }
     }

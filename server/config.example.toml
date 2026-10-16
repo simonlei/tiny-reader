@@ -57,6 +57,15 @@ radar_cache_secs = 43200
 # 例：cookie = "egg_auth=...; egg_login_nickname=...; egg_login_uid=..."
 cookie = ""
 
+[media]
+# 需要服务端代拉的图片域名。防盗链图床不认阅读器自己的页面来源。
+# 精确域名；以 . 或 *. 开头表示只匹配子域名。跳转后的 CDN 域名也要写上。
+# 不写这一段时，默认就是下面这两条。
+hosts = ["img.wangmoyu.com", ".cdn.dfyun.com.cn"]
+
+# 代拉时带上的 Referer。留空则不带。
+referer = "https://jandan.net/"
+
 [update]
 # 自动检查 GitHub Release，有更新的稳定版就替换服务端二进制并重启。
 # 只替换可执行文件，不会覆盖 config.toml 和数据库。

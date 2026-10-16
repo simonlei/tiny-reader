@@ -78,3 +78,57 @@ export function absolutizeHtml(html: string, base?: string | null): string {
 
   return out
 }
+
+/**
+ * 配置里的一条域名规则。精确匹配；以 `.` 或 `*.` 开头表示只匹配子域名。
+ */
+export function hostMatches(pattern: string, host: string): boolean {
+  const h = host.trim().replace(/\.+$/, '').toLowerCase()
+  let p = pattern.trim().replace(/\.+$/, '').toLowerCase()
+  if (!h || !p) return false
+  if (p.startsWith('*.')) p = `.${p.slice(2)}`
+  if (p.startsWith('.')) return p.length > 1 && h.endsWith(p) && h.length > p.length
+  return h === p
+}
+
+export function isHotlinkHost(host: string, patterns: readonly string[]): boolean {
+  return patterns.some((p) => hostMatches(p, host))
+}
+
+function hostOf(url: string): string | null {
+  const raw = url.trim()
+  if (!raw) return null
+  try {
+    const abs = raw.startsWith('//') ? `https:${raw}` : raw
+    return new URL(abs).hostname
+  } catch {
+    return null
+  }
+}
+
+/**
+ * 把防盗链图片改写到服务端 `/api/media`。
+ * 浏览器从阅读器页面加载图片时，发不出来 `Referer: https://jandan.net/`。
+ */
+export function rewriteHotlinkImages(
+  html: string,
+  serverUrl: string,
+  token: string,
+  patterns: readonly string[],
+): string {
+  const base = (serverUrl || '').trim().replace(/\/+$/, '')
+  const access = (token || '').trim()
+  if (!html || !base || !access || patterns.length === 0) return html
+
+  return html.replace(
+    /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(.*?)\2/gi,
+    (m, prefix: string, quote: string, url: string) => {
+      const host = hostOf(url)
+      if (!host || !isHotlinkHost(host, patterns) || url.includes('/api/media?')) return m
+      const proxied =
+        `${base}/api/media?url=${encodeURIComponent(url)}` +
+        `&token=${encodeURIComponent(access)}`
+      return `${prefix}${quote}${proxied}${quote}`
+    },
+  )
+}

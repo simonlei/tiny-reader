@@ -65,6 +65,9 @@ data class UiState(
 
     /** 上一页是否返回满页，仅作兜底显示用 */
     val lastPageFull: Boolean = false,
+
+    /** 服务端配置的图片代理域名 */
+    val mediaHosts: List<String> = emptyList(),
 ) {
     /** 是否还有下一页：以服务端游标为准，不受已读导致的 total 递减影响 */
     val hasMore: Boolean get() = cursor != null
@@ -241,8 +244,14 @@ class ReaderViewModel : ViewModel() {
         viewModelScope.launch {
             doLoadFeeds()
             doLoadStats()
+            doLoadMediaHosts()
             doLoadArticles(true)
         }
+    }
+
+    private suspend fun doLoadMediaHosts() {
+        val hosts = runCatching { ApiClient.mediaHosts() }.getOrDefault(emptyList())
+        _ui.update { it.copy(mediaHosts = hosts) }
     }
 
     // ------------------------------------------------------------------ 选择文章

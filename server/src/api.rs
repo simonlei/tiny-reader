@@ -1,8 +1,9 @@
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
+use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, Method, Request, StatusCode};
+use axum::http::{header, HeaderMap, Method, Request, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
@@ -83,6 +84,12 @@ impl AppError {
             message: msg.into(),
         }
     }
+    pub fn unauthorized(msg: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            message: msg.into(),
+        }
+    }
 }
 
 impl IntoResponse for AppError {
@@ -155,10 +162,13 @@ pub fn build_router(state: AppState) -> Router {
         .route("/refresh/status", get(refresh_status))
         // 统计
         .route("/stats", get(stats))
+        .route("/media/hosts", get(media_hosts))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             auth_middleware,
         ))
+        // 图片标签带不了 Authorization，token 放在查询参数里。白名单之外直接拒绝。
+        .route("/media", get(proxy_media))
         .with_state(state);
 
     Router::new()
@@ -191,6 +201,52 @@ async fn health() -> Json<serde_json::Value> {
         "service": "tiny-reader-server",
         "version": env!("CARGO_PKG_VERSION"),
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct MediaQuery {
+    url: String,
+    #[serde(default)]
+    token: Option<String>,
+}
+
+/// 当前配置的图片代理域名，客户端据此决定哪些 `<img>` 要改写。
+async fn media_hosts(State(st): State<AppState>) -> Json<serde_json::Value> {
+    let policy = crate::media::MediaPolicy::new(&st.config.media.hosts, &st.config.media.referer);
+    Json(json!({ "hosts": policy.patterns() }))
+}
+
+/// 代拉防盗链图片。`<img>` 带不了请求头，所以接受 `?token=`。
+async fn proxy_media(
+    State(st): State<AppState>,
+    headers: HeaderMap,
+    Query(q): Query<MediaQuery>,
+) -> Result<Response, AppError> {
+    let header_token = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| {
+            v.strip_prefix("Bearer ")
+                .or_else(|| v.strip_prefix("bearer "))
+        })
+        .map(str::trim)
+        .unwrap_or("");
+    let query_token = q.token.as_deref().unwrap_or("").trim();
+    if header_token != st.token.as_str() && query_token != st.token.as_str() {
+        return Err(AppError::unauthorized("invalid token"));
+    }
+
+    let policy = crate::media::MediaPolicy::new(&st.config.media.hosts, &st.config.media.referer);
+    let (content_type, bytes) = crate::media::fetch_hotlink_image(q.url.trim(), &policy)
+        .await
+        .map_err(AppError::bad_request)?;
+
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, content_type)
+        .header(header::CACHE_CONTROL, "private, max-age=86400")
+        .body(Body::from(bytes))
+        .map_err(|e| AppError::internal(e.to_string()))
 }
 
 // ------------------------------------------------------------------ 订阅源 CRUD

@@ -2,6 +2,7 @@ mod api;
 mod config;
 mod daily;
 mod db;
+mod media;
 mod models;
 mod opml;
 mod radar;

@@ -49,6 +49,7 @@ import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.viewinterop.AndroidView
+import com.simonlei.tinyreader.data.ApiClient
 import com.simonlei.tinyreader.data.Article
 import com.simonlei.tinyreader.ui.theme.Accent
 import com.simonlei.tinyreader.ui.theme.Bg
@@ -201,6 +202,7 @@ fun ReaderScreen(
                     } else {
                         ArticleBody(
                             article = target,
+                            mediaHosts = ui.mediaHosts,
                             onSwipeNext = { onMove(1) },
                             onSwipePrev = { onMove(-1) },
                         )
@@ -218,11 +220,16 @@ fun ReaderScreen(
 @Composable
 private fun ArticleBody(
     article: Article,
+    mediaHosts: List<String>,
     onSwipeNext: () -> Unit,
     onSwipePrev: () -> Unit,
 ) {
     val context = LocalContext.current
-    val html = remember(article.id) { buildArticleHtml(article) }
+    val serverUrl = ApiClient.currentServerUrl()
+    val token = ApiClient.currentToken()
+    val html = remember(article.id, mediaHosts, serverUrl, token) {
+        buildArticleHtml(article, serverUrl, token, mediaHosts)
+    }
     val baseUrl = remember(article.id) {
         article.feedSiteUrl?.takeIf { it.isNotBlank() } ?: article.url
     }

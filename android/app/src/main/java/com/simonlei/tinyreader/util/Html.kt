@@ -2,6 +2,7 @@ package com.simonlei.tinyreader.util
 
 import com.simonlei.tinyreader.data.Article
 import java.net.URI
+import java.net.URLEncoder
 
 /**
  * 正文 HTML 处理，对应桌面端 `src/lib/html.ts` + `ArticleView.vue` 的渲染。
@@ -55,6 +56,52 @@ fun absolutizeHtml(html: String, base: String?): String {
     return rewrite(rewrite(html, imgRe), aRe)
 }
 
+private fun isHotlinkHost(host: String, patterns: List<String>): Boolean {
+    return patterns.any { hostMatches(it, host) }
+}
+
+/** 精确域名；以 `.` 或 `*.` 开头表示只匹配子域名。与服务端规则一致。 */
+fun hostMatches(pattern: String, host: String): Boolean {
+    val h = host.trim().trimEnd('.').lowercase()
+    var p = pattern.trim().trimEnd('.').lowercase()
+    if (h.isEmpty() || p.isEmpty()) return false
+    if (p.startsWith("*.")) p = "." + p.removePrefix("*.")
+    if (p.startsWith(".")) return p.length > 1 && h.endsWith(p) && h.length > p.length
+    return h == p
+}
+
+/**
+ * 煎蛋图床不带 Referer 打不开。WebView 改不了 Referer，改写成服务端代拉地址。
+ */
+fun rewriteHotlinkImages(
+    html: String,
+    serverUrl: String,
+    token: String,
+    patterns: List<String>,
+): String {
+    val base = serverUrl.trim().trimEnd('/')
+    val access = token.trim()
+    if (html.isEmpty() || base.isEmpty() || access.isEmpty() || patterns.isEmpty()) return html
+    val imgRe = Regex("(<img\\b[^>]*?\\bsrc\\s*=\\s*)([\"'])(.*?)\\2", RegexOption.IGNORE_CASE)
+    return imgRe.replace(html) { m ->
+        val prefix = m.groupValues[1]
+        val quote = m.groupValues[2]
+        val url = m.groupValues[3]
+        val host = runCatching {
+            val abs = if (url.startsWith("//")) "https:$url" else url
+            URI(abs).host
+        }.getOrNull()
+        if (host.isNullOrBlank() || !isHotlinkHost(host, patterns) || url.contains("/api/media?")) {
+            m.value
+        } else {
+            val proxied = "$base/api/media?url=${enc(url)}&token=${enc(access)}"
+            "$prefix$quote$proxied$quote"
+        }
+    }
+}
+
+private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
+
 private fun escapeHtml(s: String): String = s
     .replace("&", "&amp;")
     .replace("<", "&lt;")
@@ -68,11 +115,21 @@ private fun escapeHtml(s: String): String = s
  * 是为了让整页只有 WebView 一个垂直滚动容器，避免嵌套滚动的手势冲突。
  * 样式取自桌面端 `src/styles/main.css` 的正文排版。
  */
-fun buildArticleHtml(article: Article): String {
+fun buildArticleHtml(
+    article: Article,
+    serverUrl: String = "",
+    token: String = "",
+    mediaHosts: List<String> = emptyList(),
+): String {
     val rawBody = article.content?.takeIf { it.isNotBlank() }
         ?: article.summary?.takeIf { it.isNotBlank() }
         ?: ""
-    val body = absolutizeHtml(rawBody, article.feedSiteUrl)
+    val body = rewriteHotlinkImages(
+        absolutizeHtml(rawBody, article.feedSiteUrl),
+        serverUrl,
+        token,
+        mediaHosts,
+    )
 
     val onlySummary = article.content.isNullOrBlank() && !article.summary.isNullOrBlank()
 

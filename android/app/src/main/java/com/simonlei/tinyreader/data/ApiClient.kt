@@ -56,6 +56,8 @@ object ApiClient {
 
     fun currentServerUrl(): String = serverUrl
 
+    fun currentToken(): String = token
+
     private fun ensureConfigured() {
         if (serverUrl.isBlank()) throw ApiError(0, "尚未配置服务端地址")
         if (token.isBlank()) throw ApiError(0, "尚未配置访问 token")
@@ -125,6 +127,9 @@ object ApiClient {
 
     suspend fun listFeeds(): List<Feed> =
         json.decodeFromString(raw("/api/feeds"))
+
+    suspend fun mediaHosts(): List<String> =
+        json.decodeFromString<MediaHosts>(raw("/api/media/hosts")).hosts
 
     suspend fun getFeed(id: Long): Feed =
         json.decodeFromString(raw("/api/feeds/$id"))

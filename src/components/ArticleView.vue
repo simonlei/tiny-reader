@@ -3,8 +3,9 @@ import { computed, onBeforeUnmount, ref, watch, nextTick } from 'vue'
 import * as app from '@/stores/app'
 import { openExternal } from '@/lib/tauri'
 import { formatTime } from '@/lib/format'
-import { absolutizeHtml } from '@/lib/html'
+import { absolutizeHtml, rewriteHotlinkImages } from '@/lib/html'
 import { registerReaderBody } from '@/lib/readerScroll'
+import { settings } from '@/stores/settings'
 
 const { state } = app
 const selected = app.selectedArticle
@@ -26,11 +27,11 @@ watch(
   },
 )
 
-// 正文：源内容是按原样保存的，这里只在渲染前把相对图片/链接地址补成绝对地址，
-// 否则会被解析到 tauri.localhost 上导致图片 404
+// 正文按原样保存。渲染前补绝对地址，并把防盗链图床改到服务端代拉。
 const body = computed(() => {
   const raw = selected.value?.content || selected.value?.summary || ''
-  return absolutizeHtml(raw, selected.value?.feed_site_url)
+  const abs = absolutizeHtml(raw, selected.value?.feed_site_url)
+  return rewriteHotlinkImages(abs, settings.serverUrl, settings.token, app.state.mediaHosts)
 })
 const showFallbackHint = computed(
   () => !selected.value?.content && !!selected.value?.summary,

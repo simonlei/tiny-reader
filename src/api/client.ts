@@ -133,6 +133,11 @@ export function refreshFeed(id: number): Promise<{ ok: boolean; new_articles: nu
   })
 }
 
+/** 服务端配置的图片代理域名 */
+export function mediaHosts(): Promise<{ hosts: string[] }> {
+  return request<{ hosts: string[] }>('/api/media/hosts')
+}
+
 /** 用 RSSHub Radar 为一个网页地址找出可用的路由 */
 export function discoverFeeds(url: string): Promise<DiscoverResult> {
   return request<DiscoverResult>('/api/feeds/discover', {
