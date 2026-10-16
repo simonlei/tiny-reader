@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::Path;
 use std::sync::Mutex;
 
@@ -223,6 +224,9 @@ impl Db {
 
     /// 写入文章。同一 `(feed_id, guid)` 已存在则跳过。
     ///
+    /// 同一源里目标地址已经出现过的，在标题比较之前就丢掉，不算标题去重，也不打标题去重日志。
+    /// 同一批里更早留下的那篇会占住这个地址，后面的同地址条目同样直接忽略。
+    ///
     /// 同一源在 6 小时内（按发布时间，没有则按抓取时间）若已有相同或接近的标题，
     /// 后到的那一篇也会被忽略。接近的判定见 [`titles_near_duplicate`]。
     /// Google 新闻标题末尾的「 - 来源」会先去掉再比较。
@@ -234,26 +238,37 @@ impl Db {
         let now_s = now.to_rfc3339();
         let mut conn = self.0.lock().unwrap();
 
-        // 同一源已有的标题。窗口按文章时间而不是「最近抓到的」，所以要带上更早的文章：
+        // 同一源已有的标题和目标地址。地址相同的在标题比较之前丢掉。
+        // 窗口按文章时间而不是「最近抓到的」，所以要带上更早的文章：
         // 源里一条旧闻如果换了 guid 又被送过来，发布时间仍落在 6 小时内就该丢掉。
+        let mut seen_urls: HashSet<String> = HashSet::new();
         let mut kept: Vec<TitleStamp> = {
             let mut stmt = conn.prepare(
-                "SELECT title, COALESCE(published_at, fetched_at) FROM articles WHERE feed_id = ?1",
+                "SELECT title, COALESCE(published_at, fetched_at), url FROM articles WHERE feed_id = ?1",
             )?;
             let rows = stmt
                 .query_map(params![feed_id], |row| {
-                    Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+                    Ok((
+                        row.get::<_, String>(0)?,
+                        row.get::<_, Option<String>>(1)?,
+                        row.get::<_, Option<String>>(2)?,
+                    ))
                 })?
-                .collect::<rusqlite::Result<Vec<(String, Option<String>)>>>()?;
-            rows.into_iter()
-                .filter_map(|(title, ts)| {
-                    Some(TitleStamp {
-                        title: title.clone(),
-                        keys: title_keys(&title)?,
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            let mut kept = Vec::new();
+            for (title, ts, url) in rows {
+                if let Some(key) = article_url_key(url.as_deref()) {
+                    seen_urls.insert(key);
+                }
+                if let Some(keys) = title_keys(&title) {
+                    kept.push(TitleStamp {
+                        title,
+                        keys,
                         at: parse_dt(ts).unwrap_or(now),
-                    })
-                })
-                .collect()
+                    });
+                }
+            }
+            kept
         };
 
         // 同一批里按时间从早到晚处理，让更早的那篇留下，后面接近的被忽略。
@@ -277,11 +292,17 @@ impl Db {
             )?;
             for idx in order {
                 let a = &items[idx];
+                if let Some(key) = article_url_key(a.url.as_deref()) {
+                    if seen_urls.contains(&key) {
+                        continue;
+                    }
+                }
                 let at = article_time(a.published_at.as_deref(), now);
                 if let Some(keys) = title_keys(&a.title) {
-                    if let Some(prev) = kept.iter().find(|k| {
-                        within_dedup_window(k.at, at) && title_keys_close(&k.keys, &keys)
-                    }) {
+                    if let Some(prev) = kept
+                        .iter()
+                        .find(|k| within_dedup_window(k.at, at) && title_keys_close(&k.keys, &keys))
+                    {
                         skipped_pairs.push((prev.title.clone(), a.title.clone()));
                         continue;
                     }
@@ -298,6 +319,9 @@ impl Db {
                     ])?;
                     if n > 0 {
                         count += n;
+                        if let Some(key) = article_url_key(a.url.as_deref()) {
+                            seen_urls.insert(key);
+                        }
                         kept.push(TitleStamp {
                             title: a.title.clone(),
                             keys,
@@ -316,6 +340,11 @@ impl Db {
                         a.published_at,
                         now_s,
                     ])?;
+                    if n > 0 {
+                        if let Some(key) = article_url_key(a.url.as_deref()) {
+                            seen_urls.insert(key);
+                        }
+                    }
                     count += n;
                 }
             }
@@ -618,6 +647,16 @@ struct TitleStamp {
     title: String,
     keys: TitleKeys,
     at: DateTime<Utc>,
+}
+
+/// 同一源下去重用的文章地址。空白不算地址，避免把没链接的条目合成一篇。
+fn article_url_key(url: Option<&str>) -> Option<String> {
+    let url = url?.trim();
+    if url.is_empty() {
+        None
+    } else {
+        Some(url.to_string())
+    }
 }
 
 fn article_time(published_at: Option<&str>, fallback: DateTime<Utc>) -> DateTime<Utc> {
@@ -951,11 +990,8 @@ mod tests {
             })
             .unwrap();
         let t0 = Utc::now();
-        db.insert_articles(
-            feed.id,
-            &[article("keep", SOHU, Some(t0.to_rfc3339()))],
-        )
-        .unwrap();
+        db.insert_articles(feed.id, &[article("keep", SOHU, Some(t0.to_rfc3339()))])
+            .unwrap();
 
         let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
         let writer = buf.clone();
@@ -982,6 +1018,172 @@ mod tests {
             log.contains(SOHU) && log.contains(SOHU_NET),
             "日志应同时带上保留和被忽略的标题，实际：{log}"
         );
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+    }
+
+    #[test]
+    fn same_url_is_dropped_before_title_filter_and_not_logged() {
+        let path = std::env::temp_dir().join(format!(
+            "tiny-reader-url-before-title-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&path).unwrap();
+        let feed = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/url-dedup.xml".into(),
+                title: Some("U".into()),
+                category: None,
+            })
+            .unwrap();
+        let other = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/url-dedup-other.xml".into(),
+                title: Some("V".into()),
+                category: None,
+            })
+            .unwrap();
+
+        let story = "https://news.example/story";
+        let batch_url = "https://news.example/batch";
+        let batch_early = "另一条足够长的新闻标题用于地址去重 - 甲";
+        let batch_late = "另一条足够长的新闻标题用于地址去重 - 甲网";
+        let other_url_title = "另一条足够长的新闻标题用于地址去重 - 乙网";
+        let t0 = Utc::now();
+        db.insert_articles(
+            feed.id,
+            &[article_with_url("keep", SOHU, story, Some(t0.to_rfc3339()))],
+        )
+        .unwrap();
+
+        let buf = std::sync::Arc::new(std::sync::Mutex::new(Vec::<u8>::new()));
+        let writer = buf.clone();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_ansi(false)
+            .without_time()
+            .with_writer(move || LogBuf(writer.clone()))
+            .finish();
+        tracing::subscriber::with_default(subscriber, || {
+            // 库里已有同地址：相近标题，以及 6 小时窗外的不同标题，都在标题过滤前丢掉。
+            assert_eq!(
+                db.insert_articles(
+                    feed.id,
+                    &[
+                        article_with_url(
+                            "again-near",
+                            SOHU_NET,
+                            story,
+                            Some((t0 + Duration::hours(1)).to_rfc3339()),
+                        ),
+                        article_with_url(
+                            "again-diff",
+                            "完全不同的另一则航运新闻标题",
+                            story,
+                            Some((t0 + Duration::hours(8)).to_rfc3339()),
+                        ),
+                    ],
+                )
+                .unwrap(),
+                0
+            );
+
+            // 同一批里同地址只留更早的那篇，不打标题去重日志。
+            assert_eq!(
+                db.insert_articles(
+                    feed.id,
+                    &[
+                        article_with_url(
+                            "batch-late",
+                            batch_late,
+                            batch_url,
+                            Some((t0 + Duration::hours(30)).to_rfc3339()),
+                        ),
+                        article_with_url(
+                            "batch-early",
+                            batch_early,
+                            batch_url,
+                            Some((t0 + Duration::hours(29)).to_rfc3339()),
+                        ),
+                    ],
+                )
+                .unwrap(),
+                1
+            );
+
+            // 别的源可以收同一篇文章。
+            assert_eq!(
+                db.insert_articles(
+                    other.id,
+                    &[article_with_url(
+                        "other-feed",
+                        SOHU_NET,
+                        story,
+                        Some((t0 + Duration::hours(1)).to_rfc3339()),
+                    )],
+                )
+                .unwrap(),
+                1
+            );
+
+            // 地址不同，标题接近，仍然走标题去重并打日志。
+            assert_eq!(
+                db.insert_articles(
+                    feed.id,
+                    &[article_with_url(
+                        "other-url",
+                        other_url_title,
+                        "https://news.example/other",
+                        Some((t0 + Duration::hours(29) + Duration::minutes(30)).to_rfc3339()),
+                    )],
+                )
+                .unwrap(),
+                0
+            );
+        });
+
+        let log = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        assert!(
+            !log.contains(SOHU_NET) && !log.contains(batch_late),
+            "同地址不应打标题去重日志，实际：{log}"
+        );
+        assert!(
+            log.contains(batch_early) && log.contains(other_url_title),
+            "不同地址的近重复标题仍应打日志，实际：{log}"
+        );
+
+        let guids = |id: i64| -> Vec<String> {
+            db.list_articles(&ArticleQuery {
+                feed_id: Some(id),
+                limit: 50,
+                ..ArticleQuery::default()
+            })
+            .unwrap()
+            .into_iter()
+            .map(|a| a.guid)
+            .collect()
+        };
+        let got = guids(feed.id);
+        for guid in ["keep", "batch-early"] {
+            assert!(got.iter().any(|g| g == guid), "missing {guid} in {got:?}");
+        }
+        for guid in ["again-near", "again-diff", "batch-late", "other-url"] {
+            assert!(
+                got.iter().all(|g| g != guid),
+                "{guid} should have been skipped, got {got:?}"
+            );
+        }
+        assert_eq!(guids(other.id), vec!["other-feed".to_string()]);
 
         drop(db);
         let _ = std::fs::remove_file(&path);
@@ -1262,5 +1464,16 @@ mod tests {
             content: None,
             published_at,
         }
+    }
+
+    fn article_with_url(
+        guid: &str,
+        title: &str,
+        url: &str,
+        published_at: Option<String>,
+    ) -> super::NewArticle {
+        let mut article = article(guid, title, published_at);
+        article.url = Some(url.into());
+        article
     }
 }
