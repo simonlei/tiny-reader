@@ -6,7 +6,8 @@ import { formatTime, stripHtml, truncate } from '@/lib/format'
 
 const { state } = app
 const currentFeedTitle = app.currentFeedTitle
-const currentUnread = app.currentUnread
+const listCount = app.currentListCount
+const listCountLabel = app.currentListLabel
 const hasMore = app.hasMore
 const listEl = ref<HTMLElement | null>(null)
 
@@ -67,7 +68,7 @@ function snippet(a: Article): string {
     <header class="list-head">
       <div class="lh-title">
         <span class="truncate">{{ currentFeedTitle }}</span>
-        <span class="unread-count" :class="{ has: currentUnread > 0 }">未读 {{ currentUnread }}</span>
+        <span class="unread-count" :class="{ has: listCount > 0 }">{{ listCountLabel }} {{ listCount }}</span>
       </div>
       <div class="lh-actions">
         <div class="filter-group">

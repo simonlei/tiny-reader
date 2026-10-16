@@ -2,7 +2,7 @@ import { computed, reactive } from 'vue'
 import * as api from '@/api/client'
 import { ApiError } from '@/api/client'
 import type { Article, ArticleFilter, Feed, RefreshStatus, Stats } from '@/api/types'
-import { listUnreadCount } from '@/lib/listUnread'
+import { listFilterCount, listFilterLabel } from '@/lib/listUnread'
 
 const PAGE_SIZE = 50
 /** 选中后多久自动标记已读（毫秒） */
@@ -71,10 +71,12 @@ export const currentFeedTitle = computed(() => {
   return state.feeds.find((f) => f.id === state.selectedFeedId)?.title ?? '全部文章'
 })
 
-/** 当前文章列表对应的未读数，显示在列表头部 */
-export const currentUnread = computed(() =>
-  listUnreadCount(state.selectedFeedId, state.stats.unread, state.feeds),
+/** 列表头部的数量，跟着当前 tab（全部 / 未读 / 星标）和选中的订阅源变 */
+export const currentListCount = computed(() =>
+  listFilterCount(state.filter, state.selectedFeedId, state.stats, state.feeds),
 )
+
+export const currentListLabel = computed(() => listFilterLabel(state.filter))
 
 export const totalUnread = computed(() =>
   state.feeds.reduce((sum, f) => sum + (f.unread_count || 0), 0),
@@ -257,6 +259,8 @@ export async function toggleStar(article?: Article | null) {
   if (!a) return
   const next = !a.is_starred
   a.is_starred = next
+  const feed = state.feeds.find((f) => f.id === a.feed_id)
+  if (feed) feed.starred_count = Math.max(0, (feed.starred_count || 0) + (next ? 1 : -1))
   state.stats.starred = Math.max(0, state.stats.starred + (next ? 1 : -1))
   try {
     await api.setStarred(a.id, next)

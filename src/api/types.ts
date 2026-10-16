@@ -11,6 +11,8 @@ export interface Feed {
   /** 未读数（列表接口返回） */
   unread_count: number
   total_count: number
+  /** 星标数（列表接口返回） */
+  starred_count: number
 }
 
 export interface Article {

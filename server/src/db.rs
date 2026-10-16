@@ -87,7 +87,8 @@ impl Db {
             SELECT f.id, f.url, f.title, f.site_url, f.description, f.category,
                    f.last_fetched_at, f.last_error, f.created_at,
                    (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0) AS unread_count,
-                   (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id)                    AS total_count
+                   (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id)                    AS total_count,
+                   (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_starred = 1) AS starred_count
             FROM feeds f
             ORDER BY f.category ASC, lower(f.title) ASC
             "#,
@@ -105,7 +106,8 @@ impl Db {
             SELECT f.id, f.url, f.title, f.site_url, f.description, f.category,
                    f.last_fetched_at, f.last_error, f.created_at,
                    (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_read = 0) AS unread_count,
-                   (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id)                    AS total_count
+                   (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id)                    AS total_count,
+                   (SELECT COUNT(*) FROM articles a WHERE a.feed_id = f.id AND a.is_starred = 1) AS starred_count
             FROM feeds f WHERE f.id = ?1
             "#,
         )?;
@@ -549,6 +551,7 @@ fn feed_from_row(row: &rusqlite::Row) -> rusqlite::Result<Feed> {
         created_at: parse_dt(row.get::<_, Option<String>>(8)?).unwrap_or_else(Utc::now),
         unread_count: row.get(9)?,
         total_count: row.get(10)?,
+        starred_count: row.get(11)?,
     })
 }
 
@@ -1103,6 +1106,58 @@ mod tests {
             .map(|a| a.guid)
             .collect();
         assert_eq!(guids, vec!["oil-xinhua".to_string()]);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+    }
+
+    #[test]
+    fn feed_counts_include_starred() {
+        let path = std::env::temp_dir().join(format!(
+            "tiny-reader-star-count-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&path).unwrap();
+        let feed = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/star.xml".into(),
+                title: Some("Star".into()),
+                category: None,
+            })
+            .unwrap();
+        db.insert_articles(
+            feed.id,
+            &[
+                article("s1", "未读未星标", Some(Utc::now().to_rfc3339())),
+                article("s2", "已读已星标", Some(Utc::now().to_rfc3339())),
+            ],
+        )
+        .unwrap();
+        let saved = db
+            .list_articles(&ArticleQuery {
+                feed_id: Some(feed.id),
+                limit: 10,
+                ..ArticleQuery::default()
+            })
+            .unwrap();
+        let starred = saved.iter().find(|a| a.guid == "s2").unwrap();
+        db.set_read(starred.id, true).unwrap();
+        db.set_starred(starred.id, true).unwrap();
+
+        let listed = db.list_feeds().unwrap();
+        let got = listed.iter().find(|f| f.id == feed.id).unwrap();
+        assert_eq!(got.total_count, 2);
+        assert_eq!(got.unread_count, 1);
+        assert_eq!(got.starred_count, 1);
 
         drop(db);
         let _ = std::fs::remove_file(&path);

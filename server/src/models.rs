@@ -20,6 +20,9 @@ pub struct Feed {
     /// 文章总数（列表接口才会填充）
     #[serde(default)]
     pub total_count: i64,
+    /// 星标数（列表接口才会填充）
+    #[serde(default)]
+    pub starred_count: i64,
 }
 
 /// 一篇文章
