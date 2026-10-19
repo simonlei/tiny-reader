@@ -2,6 +2,7 @@
 //!
 //! 煎蛋图床（dfyun / wangmoyu）不带 `Referer: https://jandan.net/` 会直接断开连接。
 //! 阅读器页面的源不是 jandan.net，浏览器发 `<img>` 时改不了 Referer，只能由服务端代拉。
+//! 目标若是 http，先改成 https 再拉：不少图床两种都开着，代拉只走加密连接。
 
 use std::sync::OnceLock;
 use std::time::Duration;
@@ -80,7 +81,21 @@ fn normalize_pattern(pattern: &str) -> String {
     }
 }
 
+/// 明文 http 改成 https。显式的 `:80` 去掉，避免打到 https 的 80 端口。
+pub fn upgrade_http_to_https(url: &str) -> Result<String, String> {
+    let mut u = reqwest::Url::parse(url).map_err(|_| "图片地址不合法".to_string())?;
+    if u.scheme() == "http" {
+        u.set_scheme("https")
+            .map_err(|_| "图片地址不合法".to_string())?;
+        if u.port() == Some(80) {
+            u.set_port(None).map_err(|_| "图片地址不合法".to_string())?;
+        }
+    }
+    Ok(u.to_string())
+}
+
 /// 校验地址并返回应附带的 Referer。不在白名单里就拒绝，避免变成开放代理。
+/// 只接受已经是 https 的地址；http 要先经过 [`upgrade_http_to_https`]。
 pub fn hotlink_referer(url: &str, policy: &MediaPolicy) -> Result<String, String> {
     let u = reqwest::Url::parse(url).map_err(|_| "图片地址不合法".to_string())?;
     if u.scheme() != "https" {
@@ -110,18 +125,20 @@ pub fn resolve_next_url(
     let next = base
         .join(location.trim())
         .map_err(|_| "图片重定向地址不合法".to_string())?;
-    hotlink_referer(next.as_str(), policy)?;
-    Ok(next.to_string())
+    let next = upgrade_http_to_https(next.as_str())?;
+    hotlink_referer(&next, policy)?;
+    Ok(next)
 }
 
 /// 带 Referer 把白名单里的图片拉回来。跟随的跳转也必须仍在白名单内。
+/// http 会先改成 https，真正发出去的请求始终是 https。
 pub async fn fetch_hotlink_image(
     url: &str,
     policy: &MediaPolicy,
 ) -> Result<(String, Vec<u8>), String> {
-    hotlink_referer(url, policy)?;
+    let mut current = upgrade_http_to_https(url)?;
+    hotlink_referer(&current, policy)?;
     let client = image_client();
-    let mut current = url.to_string();
     for _ in 0..MAX_HOPS {
         let referer = hotlink_referer(&current, policy)?;
         let mut req = client
@@ -227,7 +244,9 @@ fn normalize_content_type(content_type: &str, body: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{host_matches, hotlink_referer, resolve_next_url, MediaPolicy};
+    use super::{
+        host_matches, hotlink_referer, resolve_next_url, upgrade_http_to_https, MediaPolicy,
+    };
 
     fn jandan_policy() -> MediaPolicy {
         MediaPolicy::new(
@@ -273,10 +292,49 @@ mod tests {
             hotlink_referer(url, &policy).unwrap(),
             "https://jandan.net/"
         );
+        // 校验层仍拒绝明文 http，升级发生在代拉入口
         assert!(hotlink_referer("http://img.wangmoyu.com/a.png", &policy).is_err());
         assert!(hotlink_referer("https://example.com/a.png", &policy).is_err());
         assert!(hotlink_referer("https://user:pass@img.wangmoyu.com/a.png", &policy).is_err());
         assert!(hotlink_referer("https://127.0.0.1/a.png", &policy).is_err());
+    }
+
+    #[test]
+    fn http_image_is_fetched_over_https() {
+        assert_eq!(
+            upgrade_http_to_https("http://img.wangmoyu.com/a.png").unwrap(),
+            "https://img.wangmoyu.com/a.png"
+        );
+        assert_eq!(
+            upgrade_http_to_https("HTTP://img.wangmoyu.com:80/a.png?q=1").unwrap(),
+            "https://img.wangmoyu.com/a.png?q=1"
+        );
+        assert_eq!(
+            upgrade_http_to_https("https://img.wangmoyu.com/a.png").unwrap(),
+            "https://img.wangmoyu.com/a.png"
+        );
+        let policy = jandan_policy();
+        let upgraded = upgrade_http_to_https("http://img.wangmoyu.com/a.png").unwrap();
+        assert_eq!(
+            hotlink_referer(&upgraded, &policy).unwrap(),
+            "https://jandan.net/"
+        );
+    }
+
+    #[test]
+    fn http_redirect_is_upgraded_before_allowlist_check() {
+        let policy = jandan_policy();
+        let current = "https://wangmoyuimg.cdn.dfyun.com.cn/mw600/abc.png";
+        let next = resolve_next_url(
+            current,
+            "http://node7-27.cdn.dfyun.com.cn/f/abc.png",
+            &policy,
+        )
+        .unwrap();
+        assert!(
+            next.starts_with("https://node7-27.cdn.dfyun.com.cn/"),
+            "{next}"
+        );
     }
 
     #[test]
