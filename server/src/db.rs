@@ -32,7 +32,7 @@ impl Db {
     }
 
     fn migrate(&self) -> Result<()> {
-        let conn = self.0.lock().unwrap();
+        let mut conn = self.0.lock().unwrap();
         conn.execute_batch(
             r#"
             CREATE TABLE IF NOT EXISTS feeds (
@@ -62,6 +62,7 @@ impl Db {
                 fetched_at    TEXT    NOT NULL,
                 is_read       INTEGER NOT NULL DEFAULT 0,
                 is_starred    INTEGER NOT NULL DEFAULT 0,
+                search_text   TEXT,
                 UNIQUE (feed_id, guid)
             );
 
@@ -76,6 +77,7 @@ impl Db {
             "#,
         )
         .context("执行数据库迁移失败")?;
+        backfill_search_text(&mut conn)?;
         Ok(())
     }
 
@@ -286,8 +288,8 @@ impl Db {
             let mut stmt = tx.prepare(
                 r#"
                 INSERT OR IGNORE INTO articles
-                    (feed_id, guid, title, author, url, summary, content, published_at, fetched_at)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+                    (feed_id, guid, title, author, url, summary, content, published_at, fetched_at, search_text)
+                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
                 "#,
             )?;
             for idx in order {
@@ -306,6 +308,8 @@ impl Db {
                         skipped_pairs.push((prev.title.clone(), a.title.clone()));
                         continue;
                     }
+                    let search_text =
+                        article_search_text(&a.title, a.summary.as_deref(), a.content.as_deref());
                     let n = stmt.execute(params![
                         feed_id,
                         a.guid,
@@ -316,6 +320,7 @@ impl Db {
                         a.content,
                         a.published_at,
                         now_s,
+                        search_text,
                     ])?;
                     if n > 0 {
                         count += n;
@@ -329,6 +334,8 @@ impl Db {
                         });
                     }
                 } else {
+                    let search_text =
+                        article_search_text(&a.title, a.summary.as_deref(), a.content.as_deref());
                     let n = stmt.execute(params![
                         feed_id,
                         a.guid,
@@ -339,6 +346,7 @@ impl Db {
                         a.content,
                         a.published_at,
                         now_s,
+                        search_text,
                     ])?;
                     if n > 0 {
                         if let Some(key) = article_url_key(a.url.as_deref()) {
@@ -387,20 +395,7 @@ impl Db {
         if q.starred_only {
             sql.push_str(" AND a.is_starred = 1");
         }
-        if let Some(kw) = &q.keyword {
-            let kw = kw.trim();
-            if !kw.is_empty() {
-                sql.push_str(" AND (a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\')");
-                let like = format!(
-                    "%{}%",
-                    kw.replace('\\', "\\\\")
-                        .replace('%', "\\%")
-                        .replace('_', "\\_")
-                );
-                params.push(Box::new(like.clone()));
-                params.push(Box::new(like));
-            }
-        }
+        push_keyword_filter(&mut sql, &mut params, &q.keyword);
         // 游标（keyset）分页：只取"排在上一页最后一条之后"的记录。
         // 未读过滤下结果集随阅读不断收缩，OFFSET 会跳过中间条目，
         // 因此只要客户端传了 before_time 就一律走 keyset，忽略 offset。
@@ -494,20 +489,7 @@ impl Db {
         if q.starred_only {
             sql.push_str(" AND a.is_starred = 1");
         }
-        if let Some(kw) = &q.keyword {
-            let kw = kw.trim();
-            if !kw.is_empty() {
-                sql.push_str(" AND (a.title LIKE ? ESCAPE '\\' OR a.summary LIKE ? ESCAPE '\\')");
-                let like = format!(
-                    "%{}%",
-                    kw.replace('\\', "\\\\")
-                        .replace('%', "\\%")
-                        .replace('_', "\\_")
-                );
-                params.push(Box::new(like.clone()));
-                params.push(Box::new(like));
-            }
-        }
+        push_keyword_filter(&mut sql, &mut params, &q.keyword);
         let mut stmt = conn.prepare(&sql)?;
         let n: i64 = stmt.query_row(
             rusqlite::params_from_iter(params.iter().map(|p| p.as_ref())),
@@ -555,6 +537,221 @@ impl Db {
         )?;
         Ok((total, unread, starred))
     }
+}
+
+/// 给已有文章补上纯文本。搜索只看这段，避免命中样式、链接和图片地址。
+fn backfill_search_text(conn: &mut Connection) -> Result<()> {
+    let exists: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('articles') WHERE name = 'search_text'",
+        [],
+        |row| row.get(0),
+    )?;
+    if exists == 0 {
+        conn.execute("ALTER TABLE articles ADD COLUMN search_text TEXT", [])
+            .context("增加 search_text 列失败")?;
+    }
+    let pending = {
+        let mut stmt = conn.prepare(
+            "SELECT id, title, summary, content FROM articles WHERE search_text IS NULL",
+        )?;
+        let rows = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<rusqlite::Result<Vec<(i64, String, Option<String>, Option<String>)>>>()?;
+        rows
+    };
+    if pending.is_empty() {
+        return Ok(());
+    }
+    let tx = conn.transaction().context("补齐搜索文本失败")?;
+    {
+        let mut upd = tx.prepare("UPDATE articles SET search_text = ?1 WHERE id = ?2")?;
+        for (id, title, summary, content) in &pending {
+            let text = article_search_text(title, summary.as_deref(), content.as_deref());
+            upd.execute(params![text, id])?;
+        }
+    }
+    tx.commit()?;
+    tracing::info!(
+        count = pending.len(),
+        "已补齐文章纯文本，搜索不再匹配标签和链接"
+    );
+    Ok(())
+}
+
+fn article_search_text(title: &str, summary: Option<&str>, content: Option<&str>) -> String {
+    [Some(title), summary, content]
+        .into_iter()
+        .flatten()
+        .map(html_to_text)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// 去掉脚本、样式和标签，留下读者能看见的文字。
+fn html_to_text(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let mut out = String::new();
+    let mut i = 0;
+    while i < chars.len() {
+        if chars[i] == '<' {
+            if starts_with_ci(&chars, i, "<!--") {
+                i = skip_until(&chars, i + 4, "-->");
+                continue;
+            }
+            if tag_opens(&chars, i, "script") {
+                i = skip_element(&chars, i, "script");
+                out.push(' ');
+                continue;
+            }
+            if tag_opens(&chars, i, "style") {
+                i = skip_element(&chars, i, "style");
+                out.push(' ');
+                continue;
+            }
+            if tag_opens(&chars, i, "br") || is_block_end(&chars, i) {
+                out.push(' ');
+            }
+            i = skip_tag(&chars, i);
+            continue;
+        }
+        if chars[i] == '&' {
+            if let Some((ch, next)) = decode_entity(&chars, i) {
+                out.push(ch);
+                i = next;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn starts_with_ci(chars: &[char], i: usize, prefix: &str) -> bool {
+    let mut j = i;
+    for p in prefix.chars() {
+        if j >= chars.len() || chars[j].to_ascii_lowercase() != p {
+            return false;
+        }
+        j += 1;
+    }
+    true
+}
+
+fn tag_opens(chars: &[char], i: usize, name: &str) -> bool {
+    let prefix = format!("<{name}");
+    if !starts_with_ci(chars, i, &prefix) {
+        return false;
+    }
+    matches!(
+        chars.get(i + prefix.chars().count()).copied(),
+        Some('>' | ' ' | '\t' | '\n' | '\r' | '/')
+    )
+}
+
+fn is_block_end(chars: &[char], i: usize) -> bool {
+    const NAMES: &[&str] = &[
+        "p",
+        "div",
+        "li",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "tr",
+        "blockquote",
+    ];
+    NAMES.iter().any(|name| {
+        let prefix = format!("</{name}");
+        if !starts_with_ci(chars, i, &prefix) {
+            return false;
+        }
+        matches!(
+            chars.get(i + prefix.chars().count()).copied(),
+            Some('>' | ' ' | '\t' | '\n' | '\r' | '/')
+        )
+    })
+}
+
+fn skip_tag(chars: &[char], i: usize) -> usize {
+    let mut j = i + 1;
+    while j < chars.len() && chars[j] != '>' {
+        j += 1;
+    }
+    if j < chars.len() {
+        j + 1
+    } else {
+        chars.len()
+    }
+}
+
+fn skip_until(chars: &[char], from: usize, marker: &str) -> usize {
+    let marker: Vec<char> = marker.chars().collect();
+    let mut i = from;
+    while i + marker.len() <= chars.len() {
+        if chars[i..i + marker.len()] == marker[..] {
+            return i + marker.len();
+        }
+        i += 1;
+    }
+    chars.len()
+}
+
+fn skip_element(chars: &[char], i: usize, name: &str) -> usize {
+    let after_open = skip_tag(chars, i);
+    let close = format!("</{name}");
+    let mut j = after_open;
+    while j < chars.len() {
+        if starts_with_ci(chars, j, &close) {
+            return skip_tag(chars, j);
+        }
+        j += 1;
+    }
+    chars.len()
+}
+
+fn decode_entity(chars: &[char], i: usize) -> Option<(char, usize)> {
+    let rest = &chars[i + 1..];
+    let end = rest.iter().take(16).position(|c| *c == ';')?;
+    let body: String = rest[..end].iter().collect();
+    let ch = match body.as_str() {
+        "nbsp" => ' ',
+        "amp" => '&',
+        "lt" => '<',
+        "gt" => '>',
+        "quot" => '"',
+        "apos" | "#39" => '\'',
+        other if other.starts_with("#x") || other.starts_with("#X") => {
+            char::from_u32(u32::from_str_radix(&other[2..], 16).ok()?)?
+        }
+        other if other.starts_with('#') => char::from_u32(other[1..].parse().ok()?)?,
+        _ => return None,
+    };
+    Some((ch, i + 1 + end + 1))
+}
+
+/// 在纯文本上做子串匹配。`%` 和 `_` 按字面处理。
+fn push_keyword_filter(
+    sql: &mut String,
+    params: &mut Vec<Box<dyn rusqlite::types::ToSql>>,
+    keyword: &Option<String>,
+) {
+    let Some(kw) = keyword.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+        return;
+    };
+    sql.push_str(" AND a.search_text LIKE ? ESCAPE '\\'");
+    let like = format!(
+        "%{}%",
+        kw.replace('\\', "\\\\")
+            .replace('%', "\\%")
+            .replace('_', "\\_")
+    );
+    params.push(Box::new(like));
 }
 
 /// 刷新任务需要的精简源信息
@@ -1432,6 +1629,161 @@ mod tests {
         assert_eq!(got.total_count, 2);
         assert_eq!(got.unread_count, 1);
         assert_eq!(got.starred_count, 1);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+    }
+
+    #[test]
+    fn keyword_matches_title_summary_or_content() {
+        let path = std::env::temp_dir().join(format!(
+            "tiny-reader-keyword-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&path).unwrap();
+        let feed = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/keyword.xml".into(),
+                title: Some("Keyword".into()),
+                category: None,
+            })
+            .unwrap();
+        let now = Utc::now();
+        let title_hit = article("by-title", "油价上涨", Some(now.to_rfc3339()));
+        let mut summary_hit = article(
+            "by-summary",
+            "无关标题",
+            Some((now - Duration::seconds(1)).to_rfc3339()),
+        );
+        summary_hit.summary = Some("今天油价波动".into());
+        let mut content_hit = article(
+            "by-content",
+            "另一篇",
+            Some((now - Duration::seconds(2)).to_rfc3339()),
+        );
+        content_hit.content = Some("<p>正文里提到油价</p>".into());
+        let mut other = article(
+            "other",
+            "天气不错",
+            Some((now - Duration::seconds(3)).to_rfc3339()),
+        );
+        other.summary = Some("晴".into());
+        other.content = Some("<p>没有那个词</p>".into());
+        db.insert_articles(feed.id, &[title_hit, summary_hit, content_hit, other])
+            .unwrap();
+
+        let q = ArticleQuery {
+            keyword: Some("油价".into()),
+            limit: 10,
+            ..ArticleQuery::default()
+        };
+        let mut guids: Vec<_> = db
+            .list_articles(&q)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.guid)
+            .collect();
+        guids.sort();
+        assert_eq!(
+            guids,
+            vec![
+                "by-content".to_string(),
+                "by-summary".to_string(),
+                "by-title".to_string()
+            ]
+        );
+        assert_eq!(db.count_articles(&q).unwrap(), 3);
+
+        drop(db);
+        let _ = std::fs::remove_file(&path);
+        for suffix in ["-wal", "-shm"] {
+            let mut side = path.clone().into_os_string();
+            side.push(suffix);
+            let _ = std::fs::remove_file(side);
+        }
+    }
+
+    #[test]
+    fn html_to_text_drops_markup_and_keeps_visible_words() {
+        let markup = r#"<p style="color:#e2e2e2">今天晴朗</p><img src="https://cdn.example.com/e2e/pic.jpg"><style>.a{color:#e2e8f0}</style><script>var e2e = 1</script>"#;
+        assert_eq!(super::html_to_text(markup), "今天晴朗");
+        assert_eq!(
+            super::html_to_text("<p>流水线的 e2e 挂了</p>"),
+            "流水线的 e2e 挂了"
+        );
+        assert_eq!(super::html_to_text("A &amp; B"), "A & B");
+        assert_eq!(super::html_to_text("<!-- e2e --><p>正文</p>"), "正文");
+    }
+
+    #[test]
+    fn keyword_ignores_matches_that_only_appear_in_markup() {
+        let path = std::env::temp_dir().join(format!(
+            "tiny-reader-keyword-markup-{}-{}.db",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let db = Db::open(&path).unwrap();
+        let feed = db
+            .insert_feed(&NewFeed {
+                url: "https://example.com/markup.xml".into(),
+                title: Some("Markup".into()),
+                category: None,
+            })
+            .unwrap();
+        let now = Utc::now();
+        let mut markup = article("markup-only", "今天晴朗", Some(now.to_rfc3339()));
+        markup.content = Some(
+            r#"<p style="color:#e2e2e2">今天晴朗</p><img src="https://cdn.example.com/e2e/pic.jpg"><style>.a{color:#e2e8f0}</style>"#
+                .into(),
+        );
+        markup.summary = Some(r#"<a href="https://example.com/e2e/report">查看</a>"#.into());
+        let mut visible = article(
+            "visible",
+            "另一篇",
+            Some((now - Duration::seconds(1)).to_rfc3339()),
+        );
+        visible.content = Some("<p>流水线的 e2e 挂了</p>".into());
+        db.insert_articles(feed.id, &[markup, visible]).unwrap();
+
+        let q = ArticleQuery {
+            keyword: Some("e2e".into()),
+            limit: 10,
+            ..ArticleQuery::default()
+        };
+        let guids: Vec<_> = db
+            .list_articles(&q)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.guid)
+            .collect();
+        assert_eq!(guids, vec!["visible".to_string()]);
+        assert_eq!(db.count_articles(&q).unwrap(), 1);
+
+        db.0.lock()
+            .unwrap()
+            .execute("UPDATE articles SET search_text = NULL", [])
+            .unwrap();
+        drop(db);
+        let db = Db::open(&path).unwrap();
+        let guids: Vec<_> = db
+            .list_articles(&q)
+            .unwrap()
+            .into_iter()
+            .map(|a| a.guid)
+            .collect();
+        assert_eq!(guids, vec!["visible".to_string()]);
 
         drop(db);
         let _ = std::fs::remove_file(&path);

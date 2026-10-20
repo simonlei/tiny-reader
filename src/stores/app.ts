@@ -22,6 +22,8 @@ export const state = reactive({
   filter: 'unread' as ArticleFilter,
   selectedId: null as number | null,
   keyword: '',
+  /** 当前这页列表实际用来筛选的词。输入框要等回车重载后才更新它。 */
+  appliedKeyword: '',
 
   stats: { total: 0, unread: 0, starred: 0 } as Stats,
 
@@ -127,6 +129,8 @@ export async function loadArticles(reset = true) {
   }
 
   try {
+    // 翻页沿用已经生效的词。输入框里还没回车的新词不能混进下一页。
+    const keyword = reset ? state.keyword.trim() : state.appliedKeyword
     const page = await api.listArticles({
       feedId: state.selectedFeedId,
       filter: state.filter,
@@ -134,7 +138,7 @@ export async function loadArticles(reset = true) {
       // 翻页用游标：offset 在结果集随阅读收缩时会跳过文章
       offset: 0,
       cursor: reset ? null : state.cursor,
-      keyword: state.keyword.trim() || undefined,
+      keyword: keyword || undefined,
     })
     if (reset) {
       state.articles = page.items
@@ -152,6 +156,7 @@ export async function loadArticles(reset = true) {
     state.cursor = page.next_cursor ?? null
     state.lastPageFull = page.items.length >= PAGE_SIZE
     state.total = page.total
+    if (reset) state.appliedKeyword = keyword
     state.error = ''
     state.connected = true
   } catch (e) {

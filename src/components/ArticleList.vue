@@ -1,8 +1,9 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import * as app from '@/stores/app'
 import type { Article, ArticleFilter } from '@/api/types'
-import { formatTime, stripHtml, truncate } from '@/lib/format'
+import { formatTime, stripHtml } from '@/lib/format'
+import { LIST_EXCERPT_LIMIT, highlightParts, searchExcerpt, type HighlightPart } from '@/lib/highlight'
 
 const { state } = app
 const currentFeedTitle = app.currentFeedTitle
@@ -10,6 +11,9 @@ const listCount = app.currentListCount
 const listCountLabel = app.currentListLabel
 const hasMore = app.hasMore
 const listEl = ref<HTMLElement | null>(null)
+const searching = computed(() => state.appliedKeyword.length > 0)
+const headingLabel = computed(() => (searching.value ? '结果' : listCountLabel.value))
+const headingCount = computed(() => (searching.value ? state.total : listCount.value))
 
 const filters: { key: ArticleFilter; label: string }[] = [
   { key: 'all', label: '全部' },
@@ -58,8 +62,18 @@ function onScrollReset() {
   if (listEl.value) listEl.value.scrollTop = 0
 }
 
-function snippet(a: Article): string {
-  return truncate(stripHtml(a.content || a.summary), 160)
+function titleParts(title: string): HighlightPart[] {
+  return highlightParts(title || '', state.appliedKeyword)
+}
+
+function snippetParts(a: Article): HighlightPart[] {
+  const text = searchExcerpt(
+    stripHtml(a.content),
+    stripHtml(a.summary),
+    state.appliedKeyword,
+    LIST_EXCERPT_LIMIT,
+  )
+  return highlightParts(text, state.appliedKeyword)
 }
 </script>
 
@@ -68,7 +82,9 @@ function snippet(a: Article): string {
     <header class="list-head">
       <div class="lh-title">
         <span class="truncate">{{ currentFeedTitle }}</span>
-        <span class="unread-count" :class="{ has: listCount > 0 }">{{ listCountLabel }} {{ listCount }}</span>
+        <span class="unread-count" :class="{ has: headingCount > 0 }">
+          {{ headingLabel }} {{ headingCount }}
+        </span>
       </div>
       <div class="lh-actions">
         <div class="filter-group">
@@ -100,7 +116,13 @@ function snippet(a: Article): string {
       <div v-if="state.loading && !state.articles.length" class="hint text-mute">加载中…</div>
 
       <div v-else-if="!state.articles.length" class="hint text-mute">
-        {{ state.filter === 'unread' ? '没有未读文章 🎉' : '这里还没有文章' }}
+        {{
+          state.appliedKeyword
+            ? '没有匹配的文章'
+            : state.filter === 'unread'
+              ? '没有未读文章 🎉'
+              : '这里还没有文章'
+        }}
       </div>
 
       <article
@@ -112,7 +134,12 @@ function snippet(a: Article): string {
       >
         <div class="art-top">
           <span class="dot" :class="{ on: !a.is_read }" />
-          <h4 class="art-title truncate">{{ a.title }}</h4>
+          <h4 class="art-title truncate">
+            <template v-for="(part, i) in titleParts(a.title)" :key="i">
+              <mark v-if="part.hit" class="hit">{{ part.text }}</mark>
+              <template v-else>{{ part.text }}</template>
+            </template>
+          </h4>
           <span v-if="a.is_starred" class="star" title="已加星标">★</span>
         </div>
         <div class="art-meta text-mute">
@@ -121,7 +148,12 @@ function snippet(a: Article): string {
           </span>
           <span class="time">{{ formatTime(a.published_at, { fallback: null }) }}</span>
         </div>
-        <p class="art-snippet">{{ snippet(a) }}</p>
+        <p class="art-snippet">
+          <template v-for="(part, i) in snippetParts(a)" :key="i">
+            <mark v-if="part.hit" class="hit">{{ part.text }}</mark>
+            <template v-else>{{ part.text }}</template>
+          </template>
+        </p>
       </article>
 
       <div v-if="state.loadingMore" class="hint text-mute">加载更多…</div>
@@ -290,6 +322,13 @@ function snippet(a: Article): string {
 .time {
   margin-left: auto;
   font-variant-numeric: tabular-nums;
+}
+
+.hit {
+  background: rgba(224, 163, 58, 0.62);
+  color: inherit;
+  border-radius: 2px;
+  padding: 0 1px;
 }
 
 .art-snippet {

@@ -52,7 +52,7 @@ function isCollapsed(name: string) {
     <div class="search">
       <input
         :value="state.keyword"
-        placeholder="搜索标题 / 摘要…"
+        placeholder="搜索标题 / 正文，回车"
         @input="app.setKeyword(($event.target as HTMLInputElement).value)"
         @keyup.enter="app.reload()"
       />
