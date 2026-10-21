@@ -5,6 +5,7 @@ import ArticleList from './components/ArticleList.vue'
 import ArticleView from './components/ArticleView.vue'
 import SettingsDialog from './components/SettingsDialog.vue'
 import FeedDialog from './components/FeedDialog.vue'
+import RecommendDialog from './components/RecommendDialog.vue'
 import ImportDialog from './components/ImportDialog.vue'
 import * as app from '@/stores/app'
 import { needsSetup } from '@/stores/settings'
@@ -16,6 +17,7 @@ const { state } = app
 
 const showSettings = ref(false)
 const showFeed = ref(false)
+const showRecommend = ref(false)
 const showImport = ref(false)
 const editingFeed = ref<Feed | null>(null)
 const toast = ref('')
@@ -50,6 +52,7 @@ async function onKeydown(e: KeyboardEvent) {
   // Esc 关闭任意弹窗
   if (e.key === 'Escape') {
     if (showFeed.value) showFeed.value = false
+    else if (showRecommend.value) showRecommend.value = false
     else if (showImport.value) showImport.value = false
     else if (showSettings.value) showSettings.value = false
     return
@@ -57,7 +60,7 @@ async function onKeydown(e: KeyboardEvent) {
 
   if (e.ctrlKey || e.metaKey || e.altKey) return
   if (isTyping(e)) return
-  if (showSettings.value || showFeed.value || showImport.value) return
+  if (showSettings.value || showFeed.value || showRecommend.value || showImport.value) return
 
   const key = e.key.toLowerCase()
 
@@ -143,6 +146,11 @@ async function onFeedSaved() {
   await app.loadFeeds()
   await app.loadArticles(true)
 }
+
+async function onRecommended(title: string) {
+  notify(`已添加「${title}」`)
+  await app.loadArticles(true)
+}
 </script>
 
 <template>
@@ -150,6 +158,7 @@ async function onFeedSaved() {
     <main class="body">
       <Sidebar
         @add="openAdd"
+        @recommend="showRecommend = true"
         @edit-feed="openEdit"
         @import-opml="showImport = true"
         @settings="showSettings = true"
@@ -168,6 +177,11 @@ async function onFeedSaved() {
       :feed="editingFeed"
       @close="showFeed = false"
       @saved="onFeedSaved"
+    />
+    <RecommendDialog
+      :open="showRecommend"
+      @close="showRecommend = false"
+      @added="onRecommended"
     />
     <ImportDialog
       :open="showImport"

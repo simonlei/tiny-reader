@@ -5,6 +5,7 @@ import type { Feed } from '@/api/types'
 
 const emit = defineEmits<{
   add: []
+  recommend: []
   importOpml: []
   settings: []
   editFeed: [Feed]
@@ -86,6 +87,7 @@ function isCollapsed(name: string) {
           >
             <span :class="{ spin: state.refreshing }">⟳</span>
           </button>
+          <button class="ghost recommend-btn" title="推荐一批订阅源" @click="emit('recommend')">推荐</button>
           <button class="ghost icon-btn" title="添加订阅源" @click="emit('add')">＋</button>
         </span>
       </div>
@@ -113,7 +115,7 @@ function isCollapsed(name: string) {
       </p>
 
       <div v-if="!state.feeds.length" class="empty text-mute">
-        还没有订阅源，点上面的 ＋ 或导入 OPML
+        还没有订阅源。点上面的「推荐」看一批，或用 ＋ 自己添加
       </div>
 
       <div v-for="g in groups" :key="g.name" class="group">
@@ -268,8 +270,12 @@ function isCollapsed(name: string) {
   display: flex;
   align-items: center;
 }
-.head-actions .icon-btn {
+.head-actions .icon-btn,
+.head-actions .recommend-btn {
   padding: 0 6px;
+}
+.recommend-btn {
+  font-size: 12px;
 }
 .head-actions .icon-btn span {
   display: inline-block;

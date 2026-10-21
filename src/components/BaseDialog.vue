@@ -47,6 +47,7 @@ const emit = defineEmits<{ close: [] }>()
   max-height: 82vh;
   display: flex;
   flex-direction: column;
+  overflow: hidden;
 }
 .dlg-head {
   display: flex;
@@ -63,6 +64,7 @@ const emit = defineEmits<{ close: [] }>()
 .dlg-body {
   padding: 16px;
   overflow-y: auto;
+  min-height: 0;
 }
 .dlg-foot {
   padding: 12px 16px;
