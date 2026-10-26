@@ -1,7 +1,9 @@
+mod api_http;
 mod media_proxy;
 
 use media_proxy::MediaProxyState;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 
 /// 用系统默认浏览器打开一个外部链接。
 ///
@@ -41,6 +43,41 @@ fn app_info() -> AppInfo {
     }
 }
 
+#[derive(Deserialize)]
+struct HttpRequestArgs {
+    url: String,
+    method: String,
+    #[serde(default)]
+    headers: HashMap<String, String>,
+    body: Option<String>,
+}
+
+#[derive(Serialize)]
+struct HttpRequestResult {
+    status: u16,
+    body: String,
+}
+
+/// macOS WebView 发不出明文 HTTP，业务请求改由本进程发出。
+#[tauri::command]
+async fn http_request(args: HttpRequestArgs) -> Result<HttpRequestResult, String> {
+    let response = tauri::async_runtime::spawn_blocking(move || {
+        api_http::execute(api_http::ApiCall {
+            url: args.url,
+            method: args.method,
+            headers: args.headers,
+            body: args.body,
+        })
+    })
+    .await
+    .map_err(|err| format!("请求任务失败：{err}"))??;
+
+    Ok(HttpRequestResult {
+        status: response.status,
+        body: response.body,
+    })
+}
+
 /// 按服务端下发的域名和 Referer 启动（或更新）本机图片代理，返回 `http://127.0.0.1:端口`。
 #[tauri::command]
 fn set_media_proxy(
@@ -59,6 +96,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             open_url,
             app_info,
+            http_request,
             set_media_proxy
         ])
         .run(tauri::generate_context!())

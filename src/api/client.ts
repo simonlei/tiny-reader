@@ -30,6 +30,56 @@ interface Settings {
 
 let settings: Settings = { serverUrl: '', token: '' }
 
+type HttpTransport = (url: string, init: RequestInit) => Promise<Response>
+
+let transport: HttpTransport = (url, init) => fetch(url, init)
+
+/** 测试里替换传输层。传入 null 恢复浏览器 fetch。 */
+export function setHttpTransport(next: HttpTransport | null) {
+  transport = next ?? ((url, init) => fetch(url, init))
+}
+
+export interface NativeHttpArgs {
+  url: string
+  method: string
+  headers: Record<string, string>
+  body: string | null
+}
+
+export interface NativeHttpResult {
+  status: number
+  body: string
+}
+
+/** 把一次请求交给本进程的 HTTP 客户端（避开 macOS WebView 的明文限制）。 */
+export function createNativeHttpTransport(
+  invokeHttp: (args: NativeHttpArgs) => Promise<NativeHttpResult>,
+): HttpTransport {
+  return async (url, init) => {
+    const headers: Record<string, string> = {}
+    new Headers(init.headers).forEach((value, key) => {
+      headers[key] = value
+    })
+    const result = await invokeHttp({
+      url,
+      method: (init.method || 'GET').toUpperCase(),
+      headers,
+      body: typeof init.body === 'string' ? init.body : null,
+    })
+    return new Response(result.body, { status: result.status })
+  }
+}
+
+/** macOS 桌面端改走原生 HTTP。其他平台保持 WebView 的 fetch。 */
+export function installPlatformHttp(
+  platform: string,
+  invokeHttp: (args: NativeHttpArgs) => Promise<NativeHttpResult>,
+): boolean {
+  if (platform !== 'macos') return false
+  setHttpTransport(createNativeHttpTransport(invokeHttp))
+  return true
+}
+
 export function configure(next: Settings) {
   settings = {
     serverUrl: (next.serverUrl || '').trim().replace(/\/+$/, ''),
@@ -51,7 +101,7 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   const url = `${settings.serverUrl}${path}`
   let resp: Response
   try {
-    resp = await fetch(url, {
+    resp = await transport(url, {
       ...init,
       headers: {
         Authorization: `Bearer ${settings.token}`,
@@ -94,12 +144,17 @@ function query(params: Record<string, string | number | boolean | undefined | nu
 
 export async function health(): Promise<boolean> {
   ensureConfigured()
+  let resp: Response
   try {
-    const resp = await fetch(`${settings.serverUrl}/health`)
-    return resp.ok
-  } catch {
-    return false
+    resp = await transport(`${settings.serverUrl}/health`, { method: 'GET' })
+  } catch (e) {
+    const detail = e instanceof Error ? e.message : String(e)
+    throw new ApiError(0, `服务端没有响应（${settings.serverUrl}）：${detail}`)
   }
+  if (!resp.ok) {
+    throw new ApiError(resp.status, `服务端没有响应（HTTP ${resp.status}）`)
+  }
+  return true
 }
 
 // ------------------------------------------------------------------- 订阅源

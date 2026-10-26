@@ -39,11 +39,7 @@ async function test() {
   testResult.value = null
   apply()
   try {
-    const alive = await api.health()
-    if (!alive) {
-      testResult.value = { ok: false, msg: '服务端没有响应' }
-      return
-    }
+    await api.health()
     const feeds = await api.listFeeds()
     testResult.value = { ok: true, msg: `连接成功，共 ${feeds.length} 个订阅源` }
   } catch (e) {
@@ -99,7 +95,8 @@ function save() {
       <input v-model="settings.serverUrl" placeholder="http://127.0.0.1:8787" spellcheck="false" />
       <p class="tip text-mute">
         例：<code>http://127.0.0.1:8787</code>、<code>http://192.168.1.10:8787</code>。
-        多台客户端填同一个地址即可共享阅读状态。
+        多台客户端填同一个地址即可共享阅读状态。macOS
+        第一次访问局域网地址时，系统会询问本地网络权限，需要点允许。
       </p>
     </div>
 
