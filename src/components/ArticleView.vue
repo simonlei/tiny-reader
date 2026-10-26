@@ -27,11 +27,14 @@ watch(
   },
 )
 
-// 正文按原样保存。渲染前补绝对地址，并把防盗链图床改到服务端代拉。
+// 正文按原样保存。渲染前补绝对地址，并把防盗链图床改到本机代理。
+// 普通浏览器没有本机端口，仍走服务端代拉。
 const body = computed(() => {
   const raw = selected.value?.content || selected.value?.summary || ''
   const abs = absolutizeHtml(raw, selected.value?.feed_site_url)
-  return rewriteHotlinkImages(abs, settings.serverUrl, settings.token, app.state.mediaHosts)
+  const local = state.localMediaBase
+  if (local) return rewriteHotlinkImages(abs, local, '', state.mediaHosts)
+  return rewriteHotlinkImages(abs, settings.serverUrl, settings.token, state.mediaHosts)
 })
 const showFallbackHint = computed(
   () => !selected.value?.content && !!selected.value?.summary,

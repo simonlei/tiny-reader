@@ -203,6 +203,7 @@ fun ReaderScreen(
                         ArticleBody(
                             article = target,
                             mediaHosts = ui.mediaHosts,
+                            mediaProxyBase = ui.localMediaBase,
                             onSwipeNext = { onMove(1) },
                             onSwipePrev = { onMove(-1) },
                         )
@@ -221,21 +222,25 @@ fun ReaderScreen(
 private fun ArticleBody(
     article: Article,
     mediaHosts: List<String>,
+    mediaProxyBase: String,
     onSwipeNext: () -> Unit,
     onSwipePrev: () -> Unit,
 ) {
     val context = LocalContext.current
     val serverUrl = ApiClient.currentServerUrl()
     val token = ApiClient.currentToken()
-    val html = remember(article.id, mediaHosts, serverUrl, token) {
-        buildArticleHtml(article, serverUrl, token, mediaHosts)
+    val html = remember(article.id, mediaHosts, serverUrl, token, mediaProxyBase) {
+        buildArticleHtml(article, serverUrl, token, mediaHosts, mediaProxyBase)
     }
-    val baseUrl = remember(article.id) {
-        article.feedSiteUrl?.takeIf { it.isNotBlank() } ?: article.url
+    // 本机代理起来之后，页面源改成回环地址。否则 WebView 会把「公网站点访问 127.0.0.1」当成私网请求拦掉。
+    val baseUrl = remember(article.id, mediaProxyBase) {
+        mediaProxyBase.trim().trimEnd('/').takeIf { it.isNotEmpty() }?.let { "$it/" }
+            ?: article.feedSiteUrl?.takeIf { it.isNotBlank() }
+            ?: article.url
     }
 
-    // 换文章时重建 WebView，确保加载新内容且滚动回到顶部
-    key(article.id) {
+    // 换文章、或本机代理晚一步起来时重建 WebView，让图片地址换成新的代理。
+    key(article.id, mediaProxyBase, mediaHosts) {
         AndroidView(
             modifier = Modifier
                 .fillMaxSize()

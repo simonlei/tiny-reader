@@ -133,9 +133,9 @@ export function refreshFeed(id: number): Promise<{ ok: boolean; new_articles: nu
   })
 }
 
-/** 服务端配置的图片代理域名 */
-export function mediaHosts(): Promise<{ hosts: string[] }> {
-  return request<{ hosts: string[] }>('/api/media/hosts')
+/** 服务端配置的图片代理域名，以及代拉时要带的 Referer */
+export function mediaHosts(): Promise<{ hosts: string[]; referer?: string }> {
+  return request<{ hosts: string[]; referer?: string }>('/api/media/hosts')
 }
 
 /** 用 RSSHub Radar 为一个网页地址找出可用的路由 */

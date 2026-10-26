@@ -128,8 +128,8 @@ object ApiClient {
     suspend fun listFeeds(): List<Feed> =
         json.decodeFromString(raw("/api/feeds"))
 
-    suspend fun mediaHosts(): List<String> =
-        json.decodeFromString<MediaHosts>(raw("/api/media/hosts")).hosts
+    suspend fun mediaPolicy(): MediaHosts =
+        json.decodeFromString(raw("/api/media/hosts"))
 
     suspend fun getFeed(id: Long): Feed =
         json.decodeFromString(raw("/api/feeds/$id"))

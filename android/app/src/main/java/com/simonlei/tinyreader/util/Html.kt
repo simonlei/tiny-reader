@@ -71,7 +71,8 @@ fun hostMatches(pattern: String, host: String): Boolean {
 }
 
 /**
- * 煎蛋图床不带 Referer 打不开。WebView 改不了 Referer，改写成服务端代拉地址。
+ * 煎蛋图床不带 Referer 打不开。WebView 改不了 Referer，改写成代拉地址。
+ * 本机代理不带 token；普通浏览器退回服务端时才带 token。
  */
 fun rewriteHotlinkImages(
     html: String,
@@ -81,7 +82,7 @@ fun rewriteHotlinkImages(
 ): String {
     val base = serverUrl.trim().trimEnd('/')
     val access = token.trim()
-    if (html.isEmpty() || base.isEmpty() || access.isEmpty() || patterns.isEmpty()) return html
+    if (html.isEmpty() || base.isEmpty() || patterns.isEmpty()) return html
     val imgRe = Regex("(<img\\b[^>]*?\\bsrc\\s*=\\s*)([\"'])(.*?)\\2", RegexOption.IGNORE_CASE)
     return imgRe.replace(html) { m ->
         val prefix = m.groupValues[1]
@@ -94,7 +95,8 @@ fun rewriteHotlinkImages(
         if (host.isNullOrBlank() || !isHotlinkHost(host, patterns) || url.contains("/api/media?")) {
             m.value
         } else {
-            val proxied = "$base/api/media?url=${enc(url)}&token=${enc(access)}"
+            val tokenPart = if (access.isEmpty()) "" else "&token=${enc(access)}"
+            val proxied = "$base/api/media?url=${enc(url)}$tokenPart"
             "$prefix$quote$proxied$quote"
         }
     }
@@ -120,14 +122,16 @@ fun buildArticleHtml(
     serverUrl: String = "",
     token: String = "",
     mediaHosts: List<String> = emptyList(),
+    mediaProxyBase: String = "",
 ): String {
     val rawBody = article.content?.takeIf { it.isNotBlank() }
         ?: article.summary?.takeIf { it.isNotBlank() }
         ?: ""
+    val local = mediaProxyBase.trim()
     val body = rewriteHotlinkImages(
         absolutizeHtml(rawBody, article.feedSiteUrl),
-        serverUrl,
-        token,
+        if (local.isNotEmpty()) local else serverUrl,
+        if (local.isNotEmpty()) "" else token,
         mediaHosts,
     )
 

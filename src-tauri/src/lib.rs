@@ -1,3 +1,6 @@
+mod media_proxy;
+
+use media_proxy::MediaProxyState;
 use serde::Serialize;
 
 /// 用系统默认浏览器打开一个外部链接。
@@ -38,11 +41,26 @@ fn app_info() -> AppInfo {
     }
 }
 
+/// 按服务端下发的域名和 Referer 启动（或更新）本机图片代理，返回 `http://127.0.0.1:端口`。
+#[tauri::command]
+fn set_media_proxy(
+    hosts: Vec<String>,
+    referer: String,
+    proxy: tauri::State<MediaProxyState>,
+) -> Result<String, String> {
+    proxy.configure(hosts, referer)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_updater::Builder::new().build())
-        .invoke_handler(tauri::generate_handler![open_url, app_info])
+        .manage(MediaProxyState::new())
+        .invoke_handler(tauri::generate_handler![
+            open_url,
+            app_info,
+            set_media_proxy
+        ])
         .run(tauri::generate_context!())
         .expect("failed to launch Tiny Reader");
 }

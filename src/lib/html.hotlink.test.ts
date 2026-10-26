@@ -27,7 +27,7 @@ describe('rewriteHotlinkImages', () => {
     assert.doesNotMatch(out, /src="https:\/\/wangmoyuimg/)
   })
 
-  it('名单里没有的域名、或没配服务端时保持原样', () => {
+  it('名单里没有的域名、或没配代理地址时保持原样', () => {
     const html = '<img src="https://example.com/a.png">'
     assert.equal(
       rewriteHotlinkImages(html, 'http://127.0.0.1:8787', 't', JANDAN),
@@ -35,7 +35,15 @@ describe('rewriteHotlinkImages', () => {
     )
     const hot = '<img src="https://img.wangmoyu.com/a.jpg">'
     assert.equal(rewriteHotlinkImages(hot, '', 't', JANDAN), hot)
-    assert.equal(rewriteHotlinkImages(hot, 'http://127.0.0.1:8787', '', JANDAN), hot)
     assert.equal(rewriteHotlinkImages(hot, 'http://127.0.0.1:8787', 't', []), hot)
+  })
+
+  it('本机代理不带 token，地址改到代理根路径', () => {
+    const html = '<img src="https://img.wangmoyu.com/a.jpg">'
+    const out = rewriteHotlinkImages(html, 'http://127.0.0.1:54321', '', JANDAN)
+    assert.equal(
+      out,
+      '<img src="http://127.0.0.1:54321/api/media?url=https%3A%2F%2Fimg.wangmoyu.com%2Fa.jpg">',
+    )
   })
 })

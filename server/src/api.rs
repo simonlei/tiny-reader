@@ -210,10 +210,13 @@ struct MediaQuery {
     token: Option<String>,
 }
 
-/// 当前配置的图片代理域名，客户端据此决定哪些 `<img>` 要改写。
+/// 图片代理要用的域名和 Referer。桌面端、安卓端拿去配本机代理。
 async fn media_hosts(State(st): State<AppState>) -> Json<serde_json::Value> {
     let policy = crate::media::MediaPolicy::new(&st.config.media.hosts, &st.config.media.referer);
-    Json(json!({ "hosts": policy.patterns() }))
+    Json(json!({
+        "hosts": policy.patterns(),
+        "referer": policy.referer(),
+    }))
 }
 
 /// 代拉防盗链图片。`<img>` 带不了请求头，所以接受 `?token=`。

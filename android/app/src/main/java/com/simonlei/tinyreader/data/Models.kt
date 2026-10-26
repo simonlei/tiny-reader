@@ -100,6 +100,8 @@ data class OkResult(
 @Serializable
 data class MediaHosts(
     val hosts: List<String> = emptyList(),
+    /** 旧服务端没这个字段时，用煎蛋图床一直在用的 Referer */
+    val referer: String = "https://jandan.net/",
 )
 
 @Serializable

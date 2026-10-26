@@ -107,8 +107,10 @@ function hostOf(url: string): string | null {
 }
 
 /**
- * 把防盗链图片改写到服务端 `/api/media`。
- * 浏览器从阅读器页面加载图片时，发不出来 `Referer: https://jandan.net/`。
+ * 把防盗链图片改写到代理 `/api/media`。
+ * 页面里的 `<img>` 发不出 `Referer: https://jandan.net/`。
+ * 桌面端和安卓端把本机代理地址传进来，不带 token；
+ * 普通浏览器没有本机端口，仍传服务端地址，并带上 token。
  */
 export function rewriteHotlinkImages(
   html: string,
@@ -118,16 +120,15 @@ export function rewriteHotlinkImages(
 ): string {
   const base = (serverUrl || '').trim().replace(/\/+$/, '')
   const access = (token || '').trim()
-  if (!html || !base || !access || patterns.length === 0) return html
+  if (!html || !base || patterns.length === 0) return html
 
   return html.replace(
     /(<img\b[^>]*?\bsrc\s*=\s*)(["'])(.*?)\2/gi,
     (m, prefix: string, quote: string, url: string) => {
       const host = hostOf(url)
       if (!host || !isHotlinkHost(host, patterns) || url.includes('/api/media?')) return m
-      const proxied =
-        `${base}/api/media?url=${encodeURIComponent(url)}` +
-        `&token=${encodeURIComponent(access)}`
+      let proxied = `${base}/api/media?url=${encodeURIComponent(url)}`
+      if (access) proxied += `&token=${encodeURIComponent(access)}`
       return `${prefix}${quote}${proxied}${quote}`
     },
   )

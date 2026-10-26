@@ -9,13 +9,17 @@ import com.simonlei.tinyreader.data.Article
 import com.simonlei.tinyreader.data.ArticleFilter
 import com.simonlei.tinyreader.data.Cursor
 import com.simonlei.tinyreader.data.Feed
+import com.simonlei.tinyreader.data.MediaHosts
 import com.simonlei.tinyreader.data.RefreshStatus
 import com.simonlei.tinyreader.data.SettingsStore
 import com.simonlei.tinyreader.data.Stats
 import com.simonlei.tinyreader.data.UpdateFeedBody
+import com.simonlei.tinyreader.util.MediaProxy
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.withContext
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
@@ -68,6 +72,8 @@ data class UiState(
 
     /** 服务端配置的图片代理域名 */
     val mediaHosts: List<String> = emptyList(),
+    /** 本机图片代理根地址。空字符串表示还没起来，正文退回服务端代拉。 */
+    val localMediaBase: String = "",
 ) {
     /** 是否还有下一页：以服务端游标为准，不受已读导致的 total 递减影响 */
     val hasMore: Boolean get() = cursor != null
@@ -250,8 +256,15 @@ class ReaderViewModel : ViewModel() {
     }
 
     private suspend fun doLoadMediaHosts() {
-        val hosts = runCatching { ApiClient.mediaHosts() }.getOrDefault(emptyList())
-        _ui.update { it.copy(mediaHosts = hosts) }
+        val policy = runCatching { ApiClient.mediaPolicy() }.getOrDefault(MediaHosts())
+        val base = if (policy.hosts.isEmpty()) {
+            ""
+        } else {
+            withContext(Dispatchers.IO) {
+                runCatching { MediaProxy.setPolicy(policy.hosts, policy.referer) }.getOrDefault("")
+            }
+        }
+        _ui.update { it.copy(mediaHosts = policy.hosts, localMediaBase = base) }
     }
 
     // ------------------------------------------------------------------ 选择文章

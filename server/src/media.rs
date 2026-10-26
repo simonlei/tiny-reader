@@ -1,7 +1,7 @@
 //! 代拉带防盗链的图片。
 //!
 //! 煎蛋图床（dfyun / wangmoyu）不带 `Referer: https://jandan.net/` 会直接断开连接。
-//! 阅读器页面的源不是 jandan.net，浏览器发 `<img>` 时改不了 Referer，只能由服务端代拉。
+//! 桌面端和安卓端在本机加这个头。这里留给普通浏览器里的阅读器：页面发 `<img>` 时改不了 Referer。
 //! 目标若是 http，先改成 https 再拉：不少图床两种都开着，代拉只走加密连接。
 
 use std::sync::OnceLock;
@@ -37,6 +37,10 @@ impl MediaPolicy {
 
     pub fn patterns(&self) -> &[String] {
         &self.patterns
+    }
+
+    pub fn referer(&self) -> &str {
+        &self.referer
     }
 
     pub fn matches_host(&self, host: &str) -> bool {
@@ -253,6 +257,14 @@ mod tests {
             &["img.wangmoyu.com".into(), "*.cdn.dfyun.com.cn".into()],
             "https://jandan.net/",
         )
+    }
+
+    #[test]
+    fn referer_is_part_of_the_public_policy() {
+        let policy = jandan_policy();
+        assert_eq!(policy.referer(), "https://jandan.net/");
+        let custom = MediaPolicy::new(&["photos.example.org".into()], "  https://cdn.example/  ");
+        assert_eq!(custom.referer(), "https://cdn.example/");
     }
 
     #[test]

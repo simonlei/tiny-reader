@@ -3,6 +3,7 @@ import * as api from '@/api/client'
 import { ApiError } from '@/api/client'
 import type { Article, ArticleFilter, Feed, RefreshStatus, Stats } from '@/api/types'
 import { listFilterCount, listFilterLabel } from '@/lib/listUnread'
+import { setLocalMediaProxy } from '@/lib/tauri'
 
 const PAGE_SIZE = 50
 /** 选中后多久自动标记已读（毫秒） */
@@ -52,6 +53,10 @@ export const state = reactive({
 
   /** 服务端配置的图片代理域名。以 . 或 *. 开头表示只匹配子域名。 */
   mediaHosts: [] as string[],
+  /** 代拉这些域名时要带的 Referer。 */
+  mediaReferer: '',
+  /** 本机图片代理根地址。空字符串表示当前环境没有（例如普通浏览器）。 */
+  localMediaBase: '',
 })
 
 let autoReadTimer: ReturnType<typeof setTimeout> | undefined
@@ -375,12 +380,25 @@ export async function bootstrap() {
   }
 }
 
-/** 图片代理域名配在服务端，失败时不当成整个阅读器挂了 */
+/** 图片代理域名配在服务端。桌面端再用它们在本机起代理；失败时不当成整个阅读器挂了。 */
 export async function loadMediaHosts() {
   try {
     const res = await api.mediaHosts()
     state.mediaHosts = res.hosts ?? []
+    state.mediaReferer = res.referer ?? 'https://jandan.net/'
   } catch {
     state.mediaHosts = []
+    state.mediaReferer = ''
+    state.localMediaBase = ''
+    return
+  }
+  if (state.mediaHosts.length === 0) {
+    state.localMediaBase = ''
+    return
+  }
+  try {
+    state.localMediaBase = await setLocalMediaProxy(state.mediaHosts, state.mediaReferer)
+  } catch {
+    state.localMediaBase = ''
   }
 }
