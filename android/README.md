@@ -71,8 +71,22 @@ android/app/src/main/java/com/simonlei/tinyreader/
 cd android
 ./gradlew assembleDebug            # 产物：app/build/outputs/apk/debug/app-debug.apk
 ./gradlew installDebug             # 装到已连接的设备
-./gradlew assembleRelease          # 未签名的 release 包
+./gradlew assembleRelease          # 已签名的 release 包，可直接安装
 ```
+
+`minSdk` 是 26，Android Gradle Plugin 默认不写 V1（JAR）证书。部分手机（vivo 等）的安装器只检查开发者证书，缺了就会提示「软件包似乎无效 / 缺乏开发者证书」。构建结束时会再用 `apksigner` 补上 V1+V2+V3。
+
+没配置正式 keystore 时，release 用仓库里的 `dev.keystore`（口令 `tinyreader`，别名 `tinyreader`）签名，这样打出来的包能安装。要换成自己的证书，构建时加上：
+
+```bash
+./gradlew assembleRelease \
+  -PRELEASE_STORE_FILE=/path/to/release.jks \
+  -PRELEASE_STORE_PASSWORD=... \
+  -PRELEASE_KEY_ALIAS=... \
+  -PRELEASE_KEY_PASSWORD=...
+```
+
+换过签名证书后，手机上已安装的旧包要先卸载才能装新包。
 
 `local.properties` 里的 `sdk.dir` 指向本机 SDK；用 Android Studio 直接打开 `android/` 目录也可以。
 

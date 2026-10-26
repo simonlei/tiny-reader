@@ -228,7 +228,7 @@ X-Auth-Token: <token>
 ```bash
 npm run tauri build          # 桌面客户端安装包
 cargo build --release --manifest-path server/Cargo.toml   # 服务端可执行文件
-cd android && ./gradlew assembleRelease                   # 安卓 APK（未签名）
+cd android && ./gradlew assembleRelease                   # 安卓 APK（已签名，可直接安装）
 ```
 
 ## 已知取舍
