@@ -24,9 +24,12 @@ import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
@@ -38,6 +41,12 @@ import com.simonlei.tinyreader.ui.theme.Ok
 import com.simonlei.tinyreader.ui.theme.TextDim
 import com.simonlei.tinyreader.ui.theme.TextMain
 import com.simonlei.tinyreader.ui.theme.TextMute
+import com.simonlei.tinyreader.util.AppUpdater
+import com.simonlei.tinyreader.util.InstallStart
+import com.simonlei.tinyreader.util.UpdateDecision
+import com.simonlei.tinyreader.util.UpdateOffer
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.launch
 
 /**
  * 服务端设置，对应桌面端 `SettingsDialog.vue`。
@@ -47,6 +56,8 @@ import com.simonlei.tinyreader.ui.theme.TextMute
 fun SettingsScreen(
     ui: UiState,
     canClose: Boolean,
+    versionName: String,
+    updater: AppUpdater,
     onClose: () -> Unit,
     onSave: (String, String) -> Unit,
     onTest: (String, String, (Boolean, String) -> Unit) -> Unit,
@@ -56,6 +67,72 @@ fun SettingsScreen(
     var testing by remember { mutableStateOf(false) }
     var testOk by remember { mutableStateOf<Boolean?>(null) }
     var testMsg by remember { mutableStateOf("") }
+    val scope = rememberCoroutineScope()
+    var checking by remember { mutableStateOf(false) }
+    var downloading by remember { mutableStateOf(false) }
+    var downloaded by remember { mutableLongStateOf(0L) }
+    var totalBytes by remember { mutableLongStateOf(-1L) }
+    var updateOk by remember { mutableStateOf<Boolean?>(null) }
+    var updateMsg by remember { mutableStateOf("") }
+    var pendingUpdate by remember { mutableStateOf<UpdateOffer?>(null) }
+
+    fun checkUpdate() {
+        checking = true
+        updateOk = null
+        updateMsg = ""
+        pendingUpdate = null
+        scope.launch {
+            try {
+                when (val decision = updater.check(versionName)) {
+                    UpdateDecision.UpToDate -> {
+                        updateOk = true
+                        updateMsg = "当前已是最新版 $versionName"
+                    }
+                    is UpdateDecision.Available -> {
+                        pendingUpdate = decision.offer
+                        updateOk = true
+                        updateMsg = "发现新版本 ${decision.offer.version}"
+                    }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                updateOk = false
+                updateMsg = e.message ?: "检查更新失败"
+            } finally {
+                checking = false
+            }
+        }
+    }
+
+    fun installUpdate(offer: UpdateOffer) {
+        downloading = true
+        downloaded = 0
+        totalBytes = -1
+        updateOk = null
+        updateMsg = ""
+        scope.installOffer(
+            updater,
+            offer,
+            onProgress = { got, all ->
+                downloaded = got
+                totalBytes = all
+            },
+            onSuccess = { start ->
+                downloading = false
+                updateOk = true
+                updateMsg = when (start) {
+                    InstallStart.NeedPermission -> "请允许安装未知应用，返回后会继续升级"
+                    InstallStart.Opened -> "已打开系统安装器，确认后即可完成升级"
+                }
+            },
+            onError = { msg ->
+                downloading = false
+                updateOk = false
+                updateMsg = msg
+            },
+        )
+    }
 
     Scaffold(
         containerColor = Bg,
@@ -158,10 +235,76 @@ fun SettingsScreen(
 
             Spacer(Modifier.height(28.dp))
 
+            Text("版本与更新", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextDim)
+            Spacer(Modifier.height(8.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Text("当前版本 $versionName", fontSize = 13.sp, color = TextMute)
+                OutlinedButton(
+                    onClick = { checkUpdate() },
+                    enabled = !checking && !downloading,
+                ) {
+                    Text(if (checking) "检查中…" else "检查更新")
+                }
+            }
+            Text(
+                "从发布通道检查新版本。确认后会下载安装包，校验通过再交给系统安装器升级。",
+                fontSize = 11.sp,
+                color = TextMute,
+                modifier = Modifier.padding(top = 4.dp),
+            )
+            if (updateOk != null) {
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    updateMsg,
+                    fontSize = 13.sp,
+                    color = if (updateOk == true) Ok else Danger,
+                )
+            }
+            val offer = pendingUpdate
+            if (offer != null) {
+                Spacer(Modifier.height(10.dp))
+                Text("更新说明", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextDim)
+                Spacer(Modifier.height(4.dp))
+                Text(
+                    offer.notes.ifBlank { "（本次发布无说明）" },
+                    fontSize = 12.sp,
+                    color = TextMute,
+                )
+                Spacer(Modifier.height(10.dp))
+                Button(
+                    onClick = { installUpdate(offer) },
+                    enabled = !downloading,
+                ) {
+                    Text(
+                        when {
+                            downloading && totalBytes > 0 -> "下载中 ${downloaded * 100 / totalBytes}%"
+                            downloading -> "下载中…"
+                            else -> "下载并安装更新"
+                        },
+                    )
+                }
+                if (downloading) {
+                    Spacer(Modifier.height(8.dp))
+                    UpdateProgressBar(downloaded, totalBytes)
+                }
+                Text(
+                    "安装时系统会要求确认。若提示不允许安装未知应用，先允许本应用，返回后会继续。",
+                    fontSize = 11.sp,
+                    color = TextMute,
+                    modifier = Modifier.padding(top = 6.dp),
+                )
+            }
+
+            Spacer(Modifier.height(28.dp))
+
             Text("关于", fontSize = 12.sp, fontWeight = FontWeight.SemiBold, color = TextDim)
             Spacer(Modifier.height(6.dp))
             Text(
-                "Tiny Reader for Android · 0.1.0\n"
+                "Tiny Reader for Android · $versionName\n"
                     + "与桌面端（Windows / macOS）共用同一个 Rust 服务端。",
                 fontSize = 12.sp,
                 color = TextMute,

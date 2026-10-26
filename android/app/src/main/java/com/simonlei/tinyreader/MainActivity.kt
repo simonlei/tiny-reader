@@ -15,6 +15,7 @@ import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -25,18 +26,26 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.compose.material3.Surface
 import com.simonlei.tinyreader.data.Feed
+import com.simonlei.tinyreader.ui.AppUpdateDialog
 import com.simonlei.tinyreader.ui.ArticleListScreen
 import com.simonlei.tinyreader.ui.FeedEditDialog
 import com.simonlei.tinyreader.ui.ReaderScreen
 import com.simonlei.tinyreader.ui.ReaderViewModel
 import com.simonlei.tinyreader.ui.SettingsScreen
 import com.simonlei.tinyreader.ui.FeedDrawerContent
+import com.simonlei.tinyreader.util.AppUpdater
+import com.simonlei.tinyreader.util.UpdateDecision
+import com.simonlei.tinyreader.util.UpdateOffer
+import com.simonlei.tinyreader.util.installedVersionName
 import com.simonlei.tinyreader.ui.theme.Bg
 import com.simonlei.tinyreader.ui.theme.Panel
 import com.simonlei.tinyreader.ui.theme.TinyReaderTheme
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -70,6 +79,33 @@ private fun AppRoot(vm: ReaderViewModel = viewModel()) {
 
     var showSettings by remember { mutableStateOf(false) }
     var feedDialog by remember { mutableStateOf<FeedDialogState?>(null) }
+    val versionName = remember { installedVersionName(context) }
+    val updater = remember { AppUpdater(context) }
+    var pendingOffer by remember { mutableStateOf<UpdateOffer?>(null) }
+
+    // 从「允许安装未知应用」返回后，继续打开系统安装器。
+    val activity = context as ComponentActivity
+    DisposableEffect(activity, updater) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME && updater.installPendingIfReady()) {
+                vm.showToast("已打开系统安装器，确认后即可完成升级")
+            }
+        }
+        activity.lifecycle.addObserver(observer)
+        onDispose { activity.lifecycle.removeObserver(observer) }
+    }
+
+    LaunchedEffect(ui.needsSetup) {
+        if (ui.needsSetup) return@LaunchedEffect
+        val decision = try {
+            updater.check(versionName)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            null
+        } ?: return@LaunchedEffect
+        if (decision is UpdateDecision.Available) pendingOffer = decision.offer
+    }
 
     // OPML 导入：选文件 → 读文本 → POST /api/feeds/import
     val opmlPicker = rememberOpmlOpenLauncher { uri ->
@@ -116,6 +152,8 @@ private fun AppRoot(vm: ReaderViewModel = viewModel()) {
             ui.needsSetup || showSettings -> SettingsScreen(
                 ui = ui,
                 canClose = !ui.needsSetup,
+                versionName = versionName,
+                updater = updater,
                 onClose = { showSettings = false },
                 onSave = { url, token ->
                     vm.saveSettings(url, token)
@@ -196,6 +234,16 @@ private fun AppRoot(vm: ReaderViewModel = viewModel()) {
                 onUpdate = { id, patch, onDone -> vm.updateFeed(id, patch, onDone) },
                 onDelete = { id, onDone -> vm.removeFeed(id, onDone) },
                 onRefreshOne = { id -> vm.refreshOne(id) },
+            )
+        }
+
+        val offer = pendingOffer
+        if (offer != null && !showSettings && !ui.needsSetup && !ui.readerOpen && feedDialog == null) {
+            AppUpdateDialog(
+                updater = updater,
+                offer = offer,
+                onDismiss = { pendingOffer = null },
+                onMessage = { vm.showToast(it) },
             )
         }
 

@@ -6,6 +6,7 @@ name: Release
 #             避免在 Ubuntu 24.04 编译、旧发行版运行报 GLIBC_2.xx not found。
 #   - 客户端：Windows x86_64 + macOS universal + Android APK（客户端只要 windows/mac/android 版本）
 #   - Tauri 更新器签名 latest.json
+#   - Android 更新清单 android.json（版本、sha256、APK 地址）
 #   - 更新通道与安装包同步到腾讯云 COS，供国内用户走 CDN 更新
 #
 # 触发：
@@ -267,6 +268,80 @@ jobs:
           gh release upload "$TAG" "${{ steps.apk.outputs.name }}" \
             --repo "$GITHUB_REPOSITORY" --clobber
 
+      - name: Publish Android update channel
+        # 客户端把清单地址和安装包文件名写死在 AppUpdate.kt，这里必须生成同一份 URL。
+        # android.json 不进 Tauri 的 latest.json：那份清单只给桌面端，而且每条都要 minisign。
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COS_BUCKET: ${{ secrets.COS_BUCKET }}
+          COS_REGION: ${{ secrets.COS_REGION }}
+          COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
+          COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
+          UPDATER_CDN_BASE: ${{ secrets.UPDATER_CDN_BASE }}
+        run: |
+          set -euo pipefail
+          if [ -z "${COS_BUCKET}" ] || [ -z "${COS_REGION}" ] || [ -z "${COS_SECRET_ID}" ] \
+            || [ -z "${COS_SECRET_KEY}" ] || [ -z "${UPDATER_CDN_BASE}" ]; then
+            echo "::error::COS secrets are required to publish the Android update channel"
+            exit 1
+          fi
+          command -v aws
+          command -v jq
+          TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
+          APK="${{ steps.apk.outputs.name }}"
+          HOST="tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com"
+          CDN="${UPDATER_CDN_BASE%/}"
+          DEST="tiny-reader-android-v${VERSION}.apk"
+          if [ "$CDN" != "https://${HOST}" ]; then
+            echo "::error::UPDATER_CDN_BASE ($CDN) must be https://${HOST} to match AppUpdate.kt"
+            exit 1
+          fi
+          if [ "$APK" != "$DEST" ]; then
+            echo "::error::APK name $APK does not match $DEST"
+            exit 1
+          fi
+          SHA256="$(sha256sum "$APK" | awk '{print $1}')"
+          NOTES="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json body --jq '.body // "" | .[0:4000]')"
+          jq -n \
+            --arg version "$VERSION" \
+            --arg notes "$NOTES" \
+            --arg url "${CDN}/${DEST}" \
+            --arg sha256 "$SHA256" \
+            '{version:$version, notes:$notes, url:$url, sha256:$sha256}' > android.json
+          gh release upload "$TAG" android.json --repo "$GITHUB_REPOSITORY" --clobber
+
+          aws configure set aws_access_key_id "$COS_SECRET_ID"
+          aws configure set aws_secret_access_key "$COS_SECRET_KEY"
+          aws configure set region "$COS_REGION"
+          aws configure set s3.addressing_style virtual
+          aws configure set s3.payload_signing_enabled false
+          aws configure set default.retry_mode standard
+          aws configure set default.max_attempts 8
+          EP="https://cos.${COS_REGION}.myqcloud.com"
+          upload() {
+            local src="$1" key="$2"
+            shift 2
+            local i
+            for i in $(seq 1 5); do
+              if aws s3 cp "$src" "s3://${COS_BUCKET}/${key}" --endpoint-url "$EP" "$@"; then
+                echo "uploaded $key on attempt $i"
+                return 0
+              fi
+              echo "upload $key attempt $i failed"
+              if [ "$i" -eq 5 ]; then
+                return 1
+              fi
+              sleep $((i * i * 5))
+            done
+          }
+          upload android.json android.json \
+            --content-type "application/json; charset=utf-8" \
+            --cache-control "no-cache"
+          upload "$APK" "$DEST" \
+            --content-type "application/vnd.android.package-archive" \
+            --cache-control "public, max-age=31536000"
+
   # ========== 客户端：Windows + macOS ==========
   # 只依赖 create-release：Release 实体已建好，tauri-action 直接上传产物，
   # 不再需要服务端/Android 排在 win+mac 之后。
@@ -458,34 +533,53 @@ jobs:
              latest.json > .tmp && mv .tmp latest.json
           echo "Rewrote latest.json URLs to $UPDATER_CDN_BASE"
 
+      - name: Install coscli
+        # 固定 v1.0.9。该版本起资源名带版本号（coscli-v1.0.9-linux-amd64），
+        # 不再是旧文档里的 coscli-linux-amd64。
+        run: |
+          set -euo pipefail
+          COSCLI_VERSION=v1.0.9
+          COSCLI_SHA256=a07de5ba2800147a700ed29036b0c76a4229088cee68e1682d0eae19b638a915
+          curl -fsSL -o "$RUNNER_TEMP/coscli" \
+            "https://github.com/tencentyun/coscli/releases/download/${COSCLI_VERSION}/coscli-${COSCLI_VERSION}-linux-amd64"
+          echo "${COSCLI_SHA256}  ${RUNNER_TEMP}/coscli" | sha256sum -c -
+          chmod 755 "$RUNNER_TEMP/coscli"
+          "$RUNNER_TEMP/coscli" --version
+
       - name: Sync updater artifacts to Tencent COS
-        # runner 预装 AWS CLI v2，直接对接腾讯云 COS（S3 兼容），无需 pip 安装。
-        # virtual-hosted-style：COS 禁用 path-style（否则 PathStyleDomainForbidden）。
-        # payload_signing_enabled=false：COS 严格要求 Content-Length，
-        # 而 CLI v2 分片上传默认 aws-chunked 流式签名不带该头（MissingContentLength）。
+        # 腾讯云官方 coscli。--init-skip 跳过交互式 config init，
+        # 直接用 -i/-k/-e，不写 ~/.cos.yaml（手写配置还会把密钥当密文解密）。
+        # 目录两侧都带 /，上传的是 cos-assets 里的文件，而不是多套一层目录。
+        # 跨太平洋链路慢：文件并发压到 2，整次失败再退避重试。
         env:
           COS_BUCKET: ${{ secrets.COS_BUCKET }}
           COS_REGION: ${{ secrets.COS_REGION }}
           COS_SECRET_ID: ${{ secrets.COS_SECRET_ID }}
           COS_SECRET_KEY: ${{ secrets.COS_SECRET_KEY }}
         run: |
-          aws configure set aws_access_key_id "$COS_SECRET_ID"
-          aws configure set aws_secret_access_key "$COS_SECRET_KEY"
-          aws configure set region "$COS_REGION"
-          aws configure set s3.addressing_style virtual
-          aws configure set s3.payload_signing_enabled false
-          # 跨太平洋链路慢，降并发 + 重试兜 COS 专有的 UserNetworkTooSlow
-          aws configure set s3.max_concurrent_requests 2
-          aws configure set default.retry_mode standard
-          aws configure set default.max_attempts 8
-          EP="https://cos.$COS_REGION.myqcloud.com"
+          set -euo pipefail
+          EP="cos.${COS_REGION}.myqcloud.com"
           MAX_RETRIES=5
           for i in $(seq 1 "$MAX_RETRIES"); do
-            if aws s3 sync cos-assets "s3://$COS_BUCKET" --endpoint-url "$EP"; then
+            if "$RUNNER_TEMP/coscli" sync cos-assets/ "cos://${COS_BUCKET}/" -r \
+              --init-skip=true \
+              -i "$COS_SECRET_ID" \
+              -k "$COS_SECRET_KEY" \
+              -e "$EP" \
+              --routines 2 \
+              --thread-num 2 \
+              --skip-dir \
+              --force \
+              --check-point=false \
+              --process-log-path "$RUNNER_TEMP/coscli_output" \
+              --fail-output-path "$RUNNER_TEMP/coscli_output"; then
               echo "Sync succeeded on attempt $i."
               break
             fi
             echo "Sync attempt $i failed."
+            if [ -d "$RUNNER_TEMP/coscli_output" ]; then
+              find "$RUNNER_TEMP/coscli_output" -type f -print -exec cat {} \;
+            fi
             if [ "$i" -eq "$MAX_RETRIES" ]; then
               echo "ERROR: sync failed after $MAX_RETRIES attempts."
               exit 1

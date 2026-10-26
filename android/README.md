@@ -35,8 +35,9 @@ Tiny Reader 的安卓客户端，用 **Kotlin + Jetpack Compose** 原生实现�
 | 订阅源增删改 | 抽屉里 ＋ 新增；**长按**订阅源编辑 / 删除 / 单独刷新 |
 | OPML 导入导出 | 抽屉底部「导入 / 导出」 |
 | 在浏览器打开原文 | 阅读页按钮，或点正文里的链接 / 标题 |
+| 检查更新并升级 | 启动后检查发布通道；设置页也可手动检查。下载 APK、校验 sha256 后交给系统安装器覆盖安装 |
 
-桌面端独有、移动端不适用的部分：键盘快捷键（`j`/`k` 等）与 Tauri 自动更新。
+桌面端独有、移动端不适用的部分：键盘快捷键（`j`/`k` 等）。
 
 ## 目录结构
 
@@ -55,9 +56,12 @@ android/app/src/main/java/com/simonlei/tinyreader/
 │  ├─ ArticleWebView.kt     # 正文 WebView，自己识别横向手势
 │  ├─ FeedDrawer.kt         # 对应 Sidebar.vue
 │  ├─ SettingsScreen.kt     # 对应 SettingsDialog.vue
+│  ├─ AppUpdateDialog.kt    # 发现新版本时的升级确认
 │  ├─ FeedEditDialog.kt     # 对应 FeedDialog.vue
 │  └─ theme/Theme.kt        # 取自 src/styles/main.css 的暗色配色
 └─ util/
+   ├─ AppUpdate.kt          # 版本比较、清单校验、安装包 sha256
+   ├─ AppUpdater.kt         # 下载 APK 并交给系统安装器
    ├─ Format.kt             # 对应 src/lib/format.ts
    ├─ Html.kt               # 对应 src/lib/html.ts + 正文页面模板
    └─ External.kt           # 对应 src/lib/tauri.ts 的 openExternal
@@ -87,6 +91,14 @@ cd android
 ```
 
 换过签名证书后，手机上已安装的旧包要先卸载才能装新包。
+
+## 应用内升级
+
+设置页的「检查更新」，以及进入主界面后的自动检查，读的都是 CDN 上的 `android.json`（和桌面端 `latest.json` 同一个域名）。远程版本更高时，点「下载并安装」会下载 `tiny-reader-android-vX.Y.Z.apk`，用清单里的 sha256 校验，再打开系统安装器覆盖安装。
+
+安装包地址必须是该 CDN 上、文件名和版本号一致的 APK，其它地址会直接拒绝。第一次升级时系统可能要求允许「安装未知应用」，允许后返回会继续打开安装器。
+
+发布脚本会把 APK 和 `android.json` 同步到 CDN。覆盖安装还要求签名证书和手机上的包一致。
 
 `local.properties` 里的 `sdk.dir` 指向本机 SDK；用 Android Studio 直接打开 `android/` 目录也可以。
 
