@@ -1,22 +1,30 @@
 package com.simonlei.tinyreader.ui
 
+import android.app.Application
 import android.util.Log
-import androidx.lifecycle.ViewModel
+import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.simonlei.tinyreader.data.ApiClient
 import com.simonlei.tinyreader.data.ApiError
 import com.simonlei.tinyreader.data.Article
 import com.simonlei.tinyreader.data.ArticleFilter
+import com.simonlei.tinyreader.data.CatalogFeed
 import com.simonlei.tinyreader.data.Cursor
 import com.simonlei.tinyreader.data.Feed
+import com.simonlei.tinyreader.data.FeedCatalog
 import com.simonlei.tinyreader.data.MediaHosts
 import com.simonlei.tinyreader.data.RefreshStatus
 import com.simonlei.tinyreader.data.SettingsStore
 import com.simonlei.tinyreader.data.Stats
 import com.simonlei.tinyreader.data.UpdateFeedBody
 import com.simonlei.tinyreader.util.MediaProxy
+import com.simonlei.tinyreader.util.RECOMMEND_BATCH_SIZE
+import com.simonlei.tinyreader.util.SubscribedFeedHint
+import com.simonlei.tinyreader.util.catalogCategoryLabel
+import com.simonlei.tinyreader.util.recommendFeedPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.withContext
@@ -50,6 +58,8 @@ data class UiState(
 
     val refreshing: Boolean = false,
     val refreshInfo: RefreshStatus = RefreshStatus(),
+    /** 从服务端重载当前文章列表（不抓 RSS），对应桌面端 `reloading` */
+    val reloading: Boolean = false,
 
     // --- 移动端特有的界面状态 ---
     val serverUrl: String = "",
@@ -74,6 +84,18 @@ data class UiState(
     val mediaHosts: List<String> = emptyList(),
     /** 本机图片代理根地址。空字符串表示还没起来，正文退回服务端代拉。 */
     val localMediaBase: String = "",
+
+    // --- 订阅推荐（对应桌面端 RecommendDialog.vue 的局部状态） ---
+    val recommendItems: List<CatalogFeed> = emptyList(),
+    val recommendPage: Int = 0,
+    val recommendPages: Int = 0,
+    /** 本次打开对话框后已经添加过的目录 id */
+    val recommendAdded: Set<String> = emptySet(),
+    /** 正在添加的目录 id */
+    val recommendPending: String? = null,
+    val recommendErrors: Map<String, String> = emptyMap(),
+    val recommendSource: String = "",
+    val recommendCatalogSize: Int = 0,
 ) {
     /** 是否还有下一页：以服务端游标为准，不受已读导致的 total 递减影响 */
     val hasMore: Boolean get() = cursor != null
@@ -93,13 +115,19 @@ data class UiState(
  * 应用状态机，逐条移植桌面端 `src/stores/app.ts`。
  * 所有阅读状态都在服务端，本地只做乐观更新 + 回拉对账。
  */
-class ReaderViewModel : ViewModel() {
+class ReaderViewModel(app: Application) : AndroidViewModel(app) {
 
     private val _ui = MutableStateFlow(UiState())
     val ui: StateFlow<UiState> = _ui.asStateFlow()
 
     /** 自动已读定时器：全局只保留一个，新的选中会取消上一个 */
     private var autoReadJob: Job? = null
+
+    /** 内置订阅目录，第一次打开推荐时从 assets 读一次 */
+    private var catalog: List<CatalogFeed> = emptyList()
+    private var catalogSource: String = ""
+    /** 推荐对话框这一轮已经展示过的目录 id，换一批时接着往下取 */
+    private var recommendShown: MutableSet<String> = mutableSetOf()
 
     init {
         val saved = SettingsStore.load()
@@ -420,6 +448,27 @@ class ReaderViewModel : ViewModel() {
 
     // ----------------------------------------------------------------- 刷新
 
+    /**
+     * 只从服务端重载订阅源 / 统计 / 当前文章列表，不触发 RSS 抓取。
+     * 对应桌面端 `stores/app.ts` 的 `refreshList()`，是列表顶栏刷新按钮的行为。
+     */
+    fun refreshList() {
+        if (_ui.value.reloading) return
+        _ui.update { it.copy(reloading = true) }
+        viewModelScope.launch {
+            try {
+                // 与桌面端 Promise.all 一致：订阅源和统计并发，再重载列表
+                coroutineScope {
+                    launch { doLoadFeeds() }
+                    launch { doLoadStats() }
+                }
+                doLoadArticles(true)
+            } finally {
+                _ui.update { it.copy(reloading = false) }
+            }
+        }
+    }
+
     fun refreshAll() {
         if (_ui.value.refreshing) return
         _ui.update { it.copy(refreshing = true, error = "") }
@@ -524,6 +573,94 @@ class ReaderViewModel : ViewModel() {
             } catch (e: Throwable) {
                 handleError(e)
             }
+        }
+    }
+
+    // ------------------------------------------------------------ 订阅推荐
+
+    /** 打开推荐对话框：清空本轮记录，取第一批 */
+    fun openRecommend() {
+        recommendShown = mutableSetOf()
+        _ui.update {
+            it.copy(recommendPending = null, recommendAdded = emptySet(), recommendErrors = emptyMap())
+        }
+        viewModelScope.launch {
+            ensureCatalog()
+            loadRecommend()
+        }
+    }
+
+    fun closeRecommend() = _ui.update {
+        it.copy(recommendItems = emptyList(), recommendPending = null, recommendErrors = emptyMap())
+    }
+
+    /** 换一批：当前这批记为已看过，从剩下的里面继续取 */
+    fun shuffleRecommend() {
+        val s = _ui.value
+        if (s.recommendPending != null || s.recommendPages <= 1 || s.recommendItems.isEmpty()) return
+        recommendShown.addAll(s.recommendItems.map { it.id })
+        loadRecommend()
+        // 看完了就从头再来一轮
+        if (_ui.value.recommendItems.isEmpty()) {
+            recommendShown = mutableSetOf()
+            loadRecommend()
+        }
+    }
+
+    fun addRecommended(item: CatalogFeed) {
+        val s = _ui.value
+        if (s.recommendPending != null || s.recommendAdded.contains(item.id)) return
+        _ui.update { it.copy(recommendPending = item.id, recommendErrors = it.recommendErrors - item.id) }
+        addFeed(item.url, item.title, catalogCategoryLabel(item.category)) { err ->
+            _ui.update { cur ->
+                if (err == null) {
+                    cur.copy(
+                        recommendPending = null,
+                        recommendAdded = cur.recommendAdded + item.id,
+                        toast = "已添加「${item.title}」",
+                    )
+                } else {
+                    cur.copy(
+                        recommendPending = null,
+                        recommendErrors = cur.recommendErrors + (item.id to err),
+                    )
+                }
+            }
+        }
+    }
+
+    private fun hints(): List<SubscribedFeedHint> =
+        _ui.value.feeds.map { SubscribedFeedHint(url = it.url, title = it.title, category = it.category) }
+
+    private suspend fun ensureCatalog() {
+        if (catalog.isNotEmpty()) return
+        val app = getApplication<Application>()
+        val (feeds, source) = withContext(Dispatchers.IO) {
+            runCatching { FeedCatalog.load(app) to FeedCatalog.source(app) }
+                .getOrDefault(emptyList<CatalogFeed>() to "")
+        }
+        catalog = feeds
+        catalogSource = source
+    }
+
+    private fun loadRecommend() {
+        if (catalog.isEmpty()) {
+            _ui.update {
+                it.copy(recommendItems = emptyList(), recommendPage = 0, recommendPages = 0)
+            }
+            return
+        }
+        val result = recommendFeedPage(catalog, hints(), RECOMMEND_BATCH_SIZE, recommendShown)
+        val total = recommendShown.size + result.total
+        _ui.update { s ->
+            s.copy(
+                recommendItems = result.items,
+                recommendPages = if (total == 0) 0 else (total + RECOMMEND_BATCH_SIZE - 1) / RECOMMEND_BATCH_SIZE,
+                recommendPage = if (total == 0) 0 else recommendShown.size / RECOMMEND_BATCH_SIZE,
+                recommendErrors = emptyMap(),
+                recommendSource = catalogSource,
+                recommendCatalogSize = catalog.size,
+            )
         }
     }
 

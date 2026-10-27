@@ -24,11 +24,14 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.Inbox
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.UploadFile
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
+import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -65,6 +68,8 @@ fun FeedDrawerContent(
     onSelectFeed: (Long?) -> Unit,
     onEditFeed: (Feed) -> Unit,
     onAddFeed: () -> Unit,
+    onRecommend: () -> Unit,
+    onRefreshAll: () -> Unit,
     onImportOpml: () -> Unit,
     onExportOpml: () -> Unit,
     onOpenSettings: () -> Unit,
@@ -139,26 +144,80 @@ fun FeedDrawerContent(
             }
 
             item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(start = 16.dp, end = 8.dp, top = 14.dp, bottom = 4.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Text(
-                        "订阅源 (${ui.feeds.size})",
-                        fontSize = 11.sp,
-                        fontWeight = FontWeight.SemiBold,
-                        color = TextMute,
-                        modifier = Modifier.weight(1f),
-                    )
-                    IconButton(onClick = onAddFeed, modifier = Modifier.size(32.dp)) {
-                        Icon(
-                            Icons.Filled.Add,
-                            contentDescription = "添加订阅源",
-                            tint = TextDim,
-                            modifier = Modifier.size(18.dp),
+                Column {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(start = 16.dp, end = 4.dp, top = 14.dp, bottom = 4.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Text(
+                            "订阅源 (${ui.feeds.size})",
+                            fontSize = 11.sp,
+                            fontWeight = FontWeight.SemiBold,
+                            color = TextMute,
+                            modifier = Modifier.weight(1f),
                         )
+                        // 重新拉取所有订阅源，位置与桌面端侧边栏一致
+                        IconButton(
+                            onClick = onRefreshAll,
+                            enabled = !ui.refreshing,
+                            modifier = Modifier.size(32.dp),
+                        ) {
+                            if (ui.refreshing) {
+                                CircularProgressIndicator(
+                                    modifier = Modifier.size(16.dp),
+                                    strokeWidth = 2.dp,
+                                    color = Accent,
+                                )
+                            } else {
+                                Icon(
+                                    Icons.Filled.Refresh,
+                                    contentDescription = "重新拉取所有订阅源",
+                                    tint = TextDim,
+                                    modifier = Modifier.size(18.dp),
+                                )
+                            }
+                        }
+                        TextButton(onClick = onRecommend) {
+                            Text("推荐", fontSize = 12.sp, color = TextDim)
+                        }
+                        IconButton(onClick = onAddFeed, modifier = Modifier.size(32.dp)) {
+                            Icon(
+                                Icons.Filled.Add,
+                                contentDescription = "添加订阅源",
+                                tint = TextDim,
+                                modifier = Modifier.size(18.dp),
+                            )
+                        }
+                    }
+
+                    if (ui.refreshing) {
+                        Column(modifier = Modifier.padding(start = 16.dp, end = 16.dp, bottom = 6.dp)) {
+                            Text(
+                                if (ui.refreshInfo.total > 0) {
+                                    "${ui.refreshInfo.done} / ${ui.refreshInfo.total} · 新增 ${ui.refreshInfo.newArticles} 篇"
+                                } else {
+                                    "正在拉取…"
+                                },
+                                fontSize = 11.sp,
+                                color = TextDim,
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            LinearProgressIndicator(
+                                progress = {
+                                    if (ui.refreshInfo.total > 0) {
+                                        (ui.refreshInfo.done.toFloat() / ui.refreshInfo.total.toFloat())
+                                            .coerceIn(0f, 1f)
+                                    } else {
+                                        0f
+                                    }
+                                },
+                                modifier = Modifier.fillMaxWidth(),
+                                color = Accent,
+                                trackColor = BorderColor,
+                            )
+                        }
                     }
                 }
             }
@@ -166,7 +225,7 @@ fun FeedDrawerContent(
             if (ui.feeds.isEmpty()) {
                 item {
                     Text(
-                        "还没有订阅源，点上面的 ＋ 或导入 OPML",
+                        "还没有订阅源。点上面的「推荐」看一批，或用 ＋ 自己添加",
                         fontSize = 12.sp,
                         color = TextMute,
                         modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp),

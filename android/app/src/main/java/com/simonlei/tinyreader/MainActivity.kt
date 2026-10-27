@@ -36,6 +36,7 @@ import com.simonlei.tinyreader.ui.ArticleListScreen
 import com.simonlei.tinyreader.ui.FeedEditDialog
 import com.simonlei.tinyreader.ui.ReaderScreen
 import com.simonlei.tinyreader.ui.ReaderViewModel
+import com.simonlei.tinyreader.ui.RecommendDialog
 import com.simonlei.tinyreader.ui.SettingsScreen
 import com.simonlei.tinyreader.ui.FeedDrawerContent
 import com.simonlei.tinyreader.util.AppUpdater
@@ -79,6 +80,7 @@ private fun AppRoot(vm: ReaderViewModel = viewModel()) {
 
     var showSettings by remember { mutableStateOf(false) }
     var feedDialog by remember { mutableStateOf<FeedDialogState?>(null) }
+    var showRecommend by remember { mutableStateOf(false) }
     val versionName = remember { installedVersionName(context) }
     val updater = remember { AppUpdater(context) }
     var pendingOffer by remember { mutableStateOf<UpdateOffer?>(null) }
@@ -189,6 +191,12 @@ private fun AppRoot(vm: ReaderViewModel = viewModel()) {
                                 feedDialog = FeedDialogState.Add
                                 scope.launch { drawerState.close() }
                             },
+                            onRecommend = {
+                                vm.openRecommend()
+                                showRecommend = true
+                                scope.launch { drawerState.close() }
+                            },
+                            onRefreshAll = { vm.refreshAll() },
                             onImportOpml = {
                                 opmlPicker()
                                 scope.launch { drawerState.close() }
@@ -216,7 +224,7 @@ private fun AppRoot(vm: ReaderViewModel = viewModel()) {
                     onSubmitKeyword = { kw -> vm.submitKeyword(kw) },
                     onToggleStar = { article -> vm.toggleStar(article) },
                     onMarkAllRead = { vm.markAllRead() },
-                    onRefreshAll = { vm.refreshAll() },
+                    onRefreshList = { vm.refreshList() },
                     onOpenSettings = { showSettings = true },
                     onLoadMore = { vm.loadMore() },
                 )
@@ -237,8 +245,20 @@ private fun AppRoot(vm: ReaderViewModel = viewModel()) {
             )
         }
 
+        if (showRecommend) {
+            RecommendDialog(
+                ui = ui,
+                onDismiss = {
+                    showRecommend = false
+                    vm.closeRecommend()
+                },
+                onShuffle = { vm.shuffleRecommend() },
+                onAdd = { item -> vm.addRecommended(item) },
+            )
+        }
+
         val offer = pendingOffer
-        if (offer != null && !showSettings && !ui.needsSetup && !ui.readerOpen && feedDialog == null) {
+        if (offer != null && !showSettings && !ui.needsSetup && !ui.readerOpen && feedDialog == null && !showRecommend) {
             AppUpdateDialog(
                 updater = updater,
                 offer = offer,

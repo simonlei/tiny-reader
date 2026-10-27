@@ -5,6 +5,15 @@ plugins {
     id("org.jetbrains.kotlin.plugin.serialization")
 }
 
+// 订阅推荐目录与桌面端共用同一份 src/data/feedCatalog.json，构建时拷进 assets，
+// 免得两处各存一份、改了一边忘了另一边。
+val feedCatalogAssetDir = layout.buildDirectory.dir("generated/assets/feedCatalog")
+val copyFeedCatalog = tasks.register<Copy>("copyFeedCatalog") {
+    from(rootProject.file("../src/data/feedCatalog.json"))
+    into(feedCatalogAssetDir)
+}
+tasks.named("preBuild").configure { dependsOn(copyFeedCatalog) }
+
 android {
     namespace = "com.simonlei.tinyreader"
     compileSdk = 35
@@ -75,6 +84,10 @@ android {
 
     buildFeatures {
         compose = true
+    }
+
+    sourceSets {
+        getByName("main") { assets.srcDir(feedCatalogAssetDir) }
     }
 
     packaging {

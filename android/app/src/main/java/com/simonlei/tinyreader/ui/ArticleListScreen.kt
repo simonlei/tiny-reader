@@ -87,7 +87,8 @@ fun ArticleListScreen(
     onSubmitKeyword: (String) -> Unit,
     onToggleStar: (Article) -> Unit,
     onMarkAllRead: () -> Unit,
-    onRefreshAll: () -> Unit,
+    /** 顶栏 ⟳：只重载当前文章列表，对应桌面端 ArticleList.vue 的「刷新文章列表」 */
+    onRefreshList: () -> Unit,
     onOpenSettings: () -> Unit,
     onLoadMore: () -> Unit,
 ) {
@@ -160,15 +161,15 @@ fun ArticleListScreen(
                         IconButton(onClick = onMarkAllRead) {
                             Icon(Icons.Filled.DoneAll, contentDescription = "全部标为已读", tint = TextDim)
                         }
-                        IconButton(onClick = onRefreshAll, enabled = !ui.refreshing) {
-                            if (ui.refreshing) {
+                        IconButton(onClick = onRefreshList, enabled = !ui.reloading) {
+                            if (ui.reloading) {
                                 CircularProgressIndicator(
                                     modifier = Modifier.size(18.dp),
                                     strokeWidth = 2.dp,
                                     color = Accent,
                                 )
                             } else {
-                                Icon(Icons.Filled.Refresh, contentDescription = "刷新", tint = TextDim)
+                                Icon(Icons.Filled.Refresh, contentDescription = "刷新文章列表", tint = TextDim)
                             }
                         }
                     },
@@ -246,8 +247,8 @@ fun ArticleListScreen(
         },
     ) { padding ->
         PullToRefreshBox(
-            isRefreshing = ui.refreshing,
-            onRefresh = onRefreshAll,
+            isRefreshing = ui.reloading,
+            onRefresh = onRefreshList,
             modifier = Modifier
                 .fillMaxSize()
                 .padding(padding),
@@ -308,6 +309,7 @@ private fun statusLine(ui: UiState): String = when {
     }
 
     ui.refreshing -> "刷新中…"
+    ui.reloading -> "正在刷新列表…"
     ui.error.isNotEmpty() -> "⚠ ${ui.error}"
     else -> {
         val base = "${ui.feeds.size} 个订阅源 · 未读 ${ui.stats.unread}"

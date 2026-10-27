@@ -29,7 +29,9 @@ Tiny Reader 的安卓客户端，用 **Kotlin + Jetpack Compose** 原生实现�
 | 全部 / 未读 / 星标 | 列表顶部三个筛选标签 |
 | 搜索 | 顶栏放大镜，回车提交（`q` 参数，服务端匹配标题与摘要） |
 | 分页 | 每页 50 条，滚动接近底部自动加载 |
-| 刷新所有源 | 顶栏刷新按钮或**下拉刷新**，带进度条（轮询 `/api/refresh/status`） |
+| 刷新当前列表 | 列表顶栏 ⟳ 或**下拉刷新**：只从服务端重载列表，不触发 RSS 抓取 |
+| 重新拉取所有订阅源 | 抽屉里「订阅源」一行右边的 ⟳（位置和桌面端侧边栏一致），带进度条（轮询 `/api/refresh/status`） |
+| 订阅推荐 | 抽屉里的「推荐」：内置精选目录按已订阅主题推荐，可换一批、直接添加 |
 | 星标 / 已读手动切换 | 阅读页顶部按钮 |
 | 当前范围全部已读 | 顶栏 ✓✓ 按钮 |
 | 订阅源增删改 | 抽屉里 ＋ 新增；**长按**订阅源编辑 / 删除 / 单独刷新 |
@@ -48,6 +50,7 @@ android/app/src/main/java/com/simonlei/tinyreader/
 ├─ data/
 │  ├─ Models.kt             # DTO，对应 src/api/types.ts
 │  ├─ ApiClient.kt          # OkHttp 客户端，对应 src/api/client.ts
+│  ├─ FeedCatalog.kt        # 订阅推荐目录，读 assets/feedCatalog.json
 │  └─ SettingsStore.kt      # 地址 + token，对应 src/stores/settings.ts
 ├─ ui/
 │  ├─ ReaderViewModel.kt    # 状态机，对应 src/stores/app.ts
@@ -55,6 +58,7 @@ android/app/src/main/java/com/simonlei/tinyreader/
 │  ├─ ReaderScreen.kt       # 对应 ArticleView.vue（+ 滑动切换）
 │  ├─ ArticleWebView.kt     # 正文 WebView，自己识别横向手势
 │  ├─ FeedDrawer.kt         # 对应 Sidebar.vue
+│  ├─ RecommendDialog.kt    # 对应 RecommendDialog.vue
 │  ├─ SettingsScreen.kt     # 对应 SettingsDialog.vue
 │  ├─ AppUpdateDialog.kt    # 发现新版本时的升级确认
 │  ├─ FeedEditDialog.kt     # 对应 FeedDialog.vue
@@ -64,6 +68,7 @@ android/app/src/main/java/com/simonlei/tinyreader/
    ├─ AppUpdater.kt         # 下载 APK 并交给系统安装器
    ├─ Format.kt             # 对应 src/lib/format.ts
    ├─ Html.kt               # 对应 src/lib/html.ts + 正文页面模板
+   ├─ RecommendFeeds.kt     # 对应 src/lib/recommendFeeds.ts
    └─ External.kt           # 对应 src/lib/tauri.ts 的 openExternal
 ```
 
