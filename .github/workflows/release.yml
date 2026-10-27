@@ -6,7 +6,9 @@ name: Release
 #             避免在 Ubuntu 24.04 编译、旧发行版运行报 GLIBC_2.xx not found。
 #   - 客户端：Windows x86_64 + macOS universal + Android APK（客户端只要 windows/mac/android 版本）
 #   - Tauri 更新器签名 latest.json
-#   - Android 更新清单 android.json（版本、sha256、APK 地址）
+#   - Android 更新清单 android.json（版本、sha256、安装包地址）
+#     注：COS 上的安装包对象名是 .bin 不是 .apk —— 默认域名不允许公网分发 APK/IPA
+#     （GET 一律 403 DownloadForbidden），GitHub Release 上的资源名仍是 .apk。
 #   - 更新通道与安装包同步到腾讯云 COS，供国内用户走 CDN 更新
 #     （桌面端和 Android 的产物都先传到 GitHub Release，最后由 sync-cos 统一用 coscli 推送）
 #   - 推送顺序敏感：先同步安装包（MSI/NSIS/APP/DMG + APK）并逐个探活，确认都能
@@ -276,6 +278,10 @@ jobs:
         # android.json 不进 Tauri 的 latest.json：那份清单只给桌面端，而且每条都要 minisign。
         # 本 job 只负责构建 + 把 APK 和 android.json 传到 GitHub Release，
         # 推送 COS 统一交给 sync-cos（coscli），与桌面端走同一条链路。
+        #
+        # 名字有两个：GitHub Release 上留 .apk 给人手下载；COS 对象名用 .bin，
+        # 因为 COS 默认域名不允许公网分发 .apk（GET 一律 403 DownloadForbidden）。
+        # android.json 的 url 指向 .bin，sync-cos 下载 .apk 后改名再上传。
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           UPDATER_CDN_BASE: ${{ secrets.UPDATER_CDN_BASE }}
@@ -291,13 +297,14 @@ jobs:
           APK="${{ steps.apk.outputs.name }}"
           HOST="tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com"
           CDN="${UPDATER_CDN_BASE%/}"
-          DEST="tiny-reader-android-v${VERSION}.apk"
+          ASSET="tiny-reader-android-v${VERSION}.apk"   # GitHub Release 资源名
+          REMOTE="tiny-reader-android-v${VERSION}.bin"  # COS 对象名（见 AppUpdate.kt）
           if [ "$CDN" != "https://${HOST}" ]; then
             echo "::error::UPDATER_CDN_BASE ($CDN) must be https://${HOST} to match AppUpdate.kt"
             exit 1
           fi
-          if [ "$APK" != "$DEST" ]; then
-            echo "::error::APK name $APK does not match $DEST"
+          if [ "$APK" != "$ASSET" ]; then
+            echo "::error::APK name $APK does not match $ASSET"
             exit 1
           fi
           SHA256="$(sha256sum "$APK" | awk '{print $1}')"
@@ -305,7 +312,7 @@ jobs:
           jq -n \
             --arg version "$VERSION" \
             --arg notes "$NOTES" \
-            --arg url "${CDN}/${DEST}" \
+            --arg url "${CDN}/${REMOTE}" \
             --arg sha256 "$SHA256" \
             '{version:$version, notes:$notes, url:$url, sha256:$sha256}' > android.json
           gh release upload "$TAG" android.json --repo "$GITHUB_REPOSITORY" --clobber
@@ -477,6 +484,7 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           TAG="${{ github.event.inputs.tag || github.ref_name }}"
+          VERSION="${TAG#v}"
           mkdir -p cos-assets && cd cos-assets
 
           # latest.json 由 tauri-action 在【签名生效】时才生成。
@@ -507,18 +515,22 @@ jobs:
               --jq '.assets[].name'
             exit 1
           fi
-          # 同样只信清单引用：APK 文件名以 android.json 里写的为准
-          APK_NAME="$(jq -r '.url | split("/") | .[-1]' android.json)"
-          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$APK_NAME" || {
-            echo "::error::APK $APK_NAME not found in release $TAG"
+          # 同样只信清单引用：COS 对象名以 android.json 里写的为准（.bin）。
+          # GitHub Release 上的资源名还是同版本的 .apk，给手动下载的人用；
+          # sync-cos 下载后改名成 .bin 再上传，内容不变，sha256 仍对得上。
+          APK_REMOTE="$(jq -r '.url | split("/") | .[-1]' android.json)"
+          APK_ASSET="tiny-reader-android-v${VERSION}.apk"
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$APK_ASSET" || {
+            echo "::error::APK $APK_ASSET not found in release $TAG"
             exit 1
           }
+          mv "$APK_ASSET" "$APK_REMOTE"
           # 下载到的包必须与清单里的 sha256 一致，否则端到端升级会校验失败
-          echo "$(jq -r '.sha256' android.json)  ${APK_NAME}" | sha256sum -c - || {
-            echo "::error::downloaded $APK_NAME does not match android.json sha256"
+          echo "$(jq -r '.sha256' android.json)  ${APK_REMOTE}" | sha256sum -c - || {
+            echo "::error::downloaded $APK_REMOTE does not match android.json sha256"
             exit 1
           }
-          echo "downloaded: android.json + $APK_NAME"
+          echo "downloaded: android.json + $APK_REMOTE (from release asset $APK_ASSET)"
 
       - name: Rewrite latest.json to COS CDN
         env:
@@ -633,17 +645,20 @@ jobs:
           for u in "${URLS[@]}"; do
             CODE=""
             for i in $(seq 1 10); do
-              CODE="$(curl -sIL -o /dev/null -w '%{http_code}' "$u" || true)"
-              if [ "$CODE" = "200" ]; then break; fi
+              # 必须真读 1 字节，不能用 HEAD：COS 对 APK/IPA 有 DownloadForbidden
+              # 限制（默认域名不允许公网分发），HEAD 照样返回 200，只有 GET/Range
+              # 才暴露 403。用 HEAD 探活会漏掉「能看到新版本但下不下来」。
+              CODE="$(curl -sL -o /dev/null -w '%{http_code}' -r 0-0 --max-time 30 "$u" || true)"
+              if [ "$CODE" = "200" ] || [ "$CODE" = "206" ]; then break; fi
               if [ "$i" -eq 10 ]; then break; fi
               echo "  $u -> HTTP ${CODE:-000} (attempt $i), retry in 10s"
               sleep 10
             done
-            if [ "$CODE" != "200" ]; then
-              echo "::error::installer not reachable, abort before publishing manifests: $u"
+            if [ "$CODE" != "200" ] && [ "$CODE" != "206" ]; then
+              echo "::error::installer not downloadable, abort before publishing manifests: $u"
               exit 1
             fi
-            echo "  reachable: $u"
+            echo "  downloadable: $u"
           done
 
           echo "=== phase 2/2: update manifests ==="

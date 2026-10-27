@@ -17,7 +17,7 @@ class AppUpdateTest {
             UPDATE_MANIFEST_URL,
         )
         assertEquals(
-            "https://tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com/tiny-reader-android-v0.2.0.apk",
+            "https://tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com/tiny-reader-android-v0.2.0.bin",
             expectedApkUrl("0.2.0"),
         )
     }
@@ -73,7 +73,7 @@ class AppUpdateTest {
     @Test
     fun `不可信的地址或残缺清单会被拒绝`() {
         assertRejected("不可信") {
-            decideUpdate(manifest(url = "https://example.com/tiny-reader-android-v0.2.0.apk"), "0.1.0")
+            decideUpdate(manifest(url = "https://example.com/tiny-reader-android-v0.2.0.bin"), "0.1.0")
         }
         assertRejected("不可信") {
             decideUpdate(manifest(url = expectedApkUrl("0.3.0")), "0.1.0")

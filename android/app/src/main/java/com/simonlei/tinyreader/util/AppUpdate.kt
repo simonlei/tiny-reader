@@ -9,7 +9,11 @@ import java.security.MessageDigest
 /**
  * 安卓更新通道。清单和安装包都在桌面端同一个 CDN 上。
  * 地址写死在这里，发布脚本 `.github/workflows/release.yml` 必须传到同一个 host，
- * 安装包文件名必须是 `tiny-reader-android-vX.Y.Z.apk`。
+ * 安装包在 COS 上的对象名是 `tiny-reader-android-vX.Y.Z.bin`。
+ *
+ * 为什么是 .bin 不是 .apk：腾讯云 COS 不允许用默认域名（*.cos.<region>.myqcloud.com）
+ * 在公网分发 APK/IPA，GET 一律返回 403 DownloadForbidden，必须绑自定义域名才放行 .apk。
+ * 改扩展名即可绕过（只影响远端对象名，下载到本地仍按 .apk 交给系统安装器）。
  */
 const val UPDATE_CDN_HOST = "tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com"
 const val UPDATE_MANIFEST_URL = "https://$UPDATE_CDN_HOST/android.json"
@@ -53,7 +57,7 @@ private data class SemVer(val major: Long, val minor: Long, val patch: Long) : C
 
 fun expectedApkUrl(version: String): String {
     val ver = version.trim().removePrefix("v").trim()
-    return "https://$UPDATE_CDN_HOST/tiny-reader-android-v$ver.apk"
+    return "https://$UPDATE_CDN_HOST/tiny-reader-android-v$ver.bin"
 }
 
 /**

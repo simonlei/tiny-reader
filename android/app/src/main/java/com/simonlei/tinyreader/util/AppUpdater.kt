@@ -111,6 +111,8 @@ class AppUpdater(context: Context) {
         onProgress: (downloaded: Long, total: Long) -> Unit,
     ): File = withContext(Dispatchers.IO) {
             if (offer.url != expectedApkUrl(offer.version)) throw UpdateRejected("更新包地址不可信")
+            // 远端对象名是 .bin（COS 默认域名不分发 .apk），本地落盘仍叫 .apk，
+            // 交给系统安装器时按 MIME + 扩展名识别，不受远端名字影响。
             val file = File(File(context.cacheDir, "updates").apply { mkdirs() }, "tiny-reader-update.apk")
             if (file.exists() && !file.delete()) throw UpdateRejected("无法清理上次的安装包")
             val job = coroutineContext[Job]
