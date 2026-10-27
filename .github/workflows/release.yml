@@ -9,6 +9,8 @@ name: Release
 #   - Android 更新清单 android.json（版本、sha256、APK 地址）
 #   - 更新通道与安装包同步到腾讯云 COS，供国内用户走 CDN 更新
 #     （桌面端和 Android 的产物都先传到 GitHub Release，最后由 sync-cos 统一用 coscli 推送）
+#   - 推送顺序敏感：先同步安装包（MSI/NSIS/APP/DMG + APK）并逐个探活，确认都能
+#     下载后才推 latest.json / android.json。清单先到会让用户看到新版本却下载失败。
 #
 # 触发：
 #   1. 推送 v* 标签 → 自动构建并发布 Release
@@ -459,6 +461,11 @@ jobs:
   # 两个 job 都只负责构建并把产物传到 GitHub Release，推送 COS 统一在这里用 coscli 做，
   # 避免 Android 单独用 aws s3 走另一条链路。
   # 服务端包不在 latest.json 的 platforms 里，也不需同步 COS，故不依赖 build-server。
+  #
+  # 客户端读的更新清单是 COS 上的 latest.json / android.json（见 tauri.conf.json 的
+  # endpoints 与 AppUpdate.kt 的 UPDATE_MANIFEST_URL），因此这里必须「安装包先上、
+  # 清单最后上」：coscli 并发上传，清单只有几 KB，混在一起传必然先落地，
+  # 那一小段时间里用户会看到新版本但下载 404。
   sync-cos:
     needs: [release, build-android]
     permissions:
@@ -534,8 +541,15 @@ jobs:
               exit 1
               ;;
           esac
-          echo "--- files to sync ---"
+
+          # 清单与安装包分开目录，才能分两次推送：先 cos-assets（安装包），
+          # 探活通过后最后推 cos-manifests（latest.json / android.json）。
+          mkdir -p ../cos-manifests
+          mv latest.json android.json ../cos-manifests/
+          echo "--- installers (upload first) ---"
           ls -lh
+          echo "--- manifests (upload last) ---"
+          ls -lh ../cos-manifests
 
       - name: Install coscli
         # 固定 v1.0.9。该版本起资源名带版本号（coscli-v1.0.9-linux-amd64），
@@ -550,11 +564,21 @@ jobs:
           chmod 755 "$RUNNER_TEMP/coscli"
           "$RUNNER_TEMP/coscli" --version
 
-      - name: Sync updater artifacts to Tencent COS
+      - name: Sync to COS (installers first, manifests last)
         # 腾讯云官方 coscli。--init-skip 跳过交互式 config init，
         # 直接用 -i/-k/-e，不写 ~/.cos.yaml（手写配置还会把密钥当密文解密）。
-        # 目录两侧都带 /，上传的是 cos-assets 里的文件，而不是多套一层目录。
-        # 跨太平洋链路慢：文件并发压到 2，整次失败再退避重试。
+        # 目录两侧都带 /，上传的是目录里的文件，而不是多套一层目录。
+        # 跨太平洋链路慢（实测 30~40 KB/s），整次失败再退避重试，因此：
+        #   --routines 4    并发 4 个文件，长肥管道上比 2 路更能跑满带宽
+        #   --part-size 4   大于 4MB 才分块，让十几 MB 的安装包也走分块上传
+        #   --check-point   分块上传默认开启断点续传，重试只补未完成的块，
+        #                   不用像 --check-point=false 那样每次从头传 17MB
+        #   --thread-num 4  单文件内的分块并发
+        #
+        # 两个阶段：
+        #   1. cos-assets/    安装包（MSI/NSIS/APP/DMG + APK）
+        #   2. cos-manifests/ latest.json + android.json（清单最后上）
+        # 中间逐个 HEAD 探活，任一安装包取不到就中止，绝不让清单先于安装包生效。
         env:
           COS_BUCKET: ${{ secrets.COS_BUCKET }}
           COS_REGION: ${{ secrets.COS_REGION }}
@@ -564,32 +588,64 @@ jobs:
           set -euo pipefail
           EP="cos.${COS_REGION}.myqcloud.com"
           MAX_RETRIES=5
-          for i in $(seq 1 "$MAX_RETRIES"); do
-            if "$RUNNER_TEMP/coscli" sync cos-assets/ "cos://${COS_BUCKET}/" -r \
-              --init-skip=true \
-              -i "$COS_SECRET_ID" \
-              -k "$COS_SECRET_KEY" \
-              -e "$EP" \
-              --routines 2 \
-              --thread-num 2 \
-              --skip-dir \
-              --force \
-              --check-point=false \
-              --process-log-path "$RUNNER_TEMP/coscli_output" \
-              --fail-output-path "$RUNNER_TEMP/coscli_output"; then
-              echo "Sync succeeded on attempt $i."
-              break
-            fi
-            echo "Sync attempt $i failed."
-            if [ -d "$RUNNER_TEMP/coscli_output" ]; then
-              find "$RUNNER_TEMP/coscli_output" -type f -print -exec cat {} \;
-            fi
-            if [ "$i" -eq "$MAX_RETRIES" ]; then
-              echo "ERROR: sync failed after $MAX_RETRIES attempts."
+
+          cos_sync() {
+            local dir="$1"
+            for i in $(seq 1 "$MAX_RETRIES"); do
+              if "$RUNNER_TEMP/coscli" sync "$dir" "cos://${COS_BUCKET}/" -r \
+                --init-skip=true \
+                -i "$COS_SECRET_ID" \
+                -k "$COS_SECRET_KEY" \
+                -e "$EP" \
+                --routines 4 \
+                --thread-num 4 \
+                --part-size 4 \
+                --skip-dir \
+                --force \
+                --check-point=true \
+                --process-log-path "$RUNNER_TEMP/coscli_output" \
+                --fail-output-path "$RUNNER_TEMP/coscli_output"; then
+                echo "Sync $dir succeeded on attempt $i."
+                return 0
+              fi
+              echo "Sync $dir attempt $i failed."
+              if [ -d "$RUNNER_TEMP/coscli_output" ]; then
+                find "$RUNNER_TEMP/coscli_output" -type f -print -exec cat {} \;
+              fi
+              if [ "$i" -eq "$MAX_RETRIES" ]; then
+                echo "ERROR: sync $dir failed after $MAX_RETRIES attempts."
+                return 1
+              fi
+              SLEEP=$((i * i * 5))
+              echo "Retrying in ${SLEEP}s..."
+              sleep "$SLEEP"
+            done
+          }
+
+          echo "=== phase 1/2: installers ==="
+          cos_sync cos-assets/
+
+          echo "=== verify every installer URL is downloadable ==="
+          mapfile -t URLS < <(
+            jq -r '.platforms[].url' cos-manifests/latest.json
+            jq -r '.url' cos-manifests/android.json
+          )
+          for u in "${URLS[@]}"; do
+            CODE=""
+            for i in $(seq 1 10); do
+              CODE="$(curl -sIL -o /dev/null -w '%{http_code}' "$u" || true)"
+              if [ "$CODE" = "200" ]; then break; fi
+              if [ "$i" -eq 10 ]; then break; fi
+              echo "  $u -> HTTP ${CODE:-000} (attempt $i), retry in 10s"
+              sleep 10
+            done
+            if [ "$CODE" != "200" ]; then
+              echo "::error::installer not reachable, abort before publishing manifests: $u"
               exit 1
             fi
-            SLEEP=$((i * i * 5))
-            echo "Retrying in ${SLEEP}s..."
-            sleep "$SLEEP"
+            echo "  reachable: $u"
           done
-          echo "Synced updater artifacts to COS."
+
+          echo "=== phase 2/2: update manifests ==="
+          cos_sync cos-manifests/
+          echo "Synced installers and update manifests to COS."
