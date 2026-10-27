@@ -8,7 +8,6 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.slideInHorizontally
 import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.animation.togetherWith
-import androidx.compose.foundation.gestures.detectHorizontalDragGestures
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -41,7 +40,6 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -60,7 +58,6 @@ import com.simonlei.tinyreader.ui.theme.TextMute
 import com.simonlei.tinyreader.ui.theme.Warn
 import com.simonlei.tinyreader.util.buildArticleHtml
 import com.simonlei.tinyreader.util.openExternal
-import kotlin.math.abs
 
 /**
  * 阅读页。
@@ -217,6 +214,9 @@ fun ReaderScreen(
 /**
  * 正文区：整页就是一个 WebView，横向手势由 [ArticleWebView] 自己识别后回调，
  * 竖向滚动仍然交给 WebView，避免嵌套滚动冲突。
+ *
+ * 这里不再叠加一层 Compose 的横向手势：WebView 会消费掉全部触摸事件，
+ * 外层再挂一个 detector 只会和竖向滚动抢事件，把「读文章时手指横飘」判成翻页。
  */
 @Composable
 private fun ArticleBody(
@@ -242,20 +242,7 @@ private fun ArticleBody(
     // 换文章、或本机代理晚一步起来时重建 WebView，让图片地址换成新的代理。
     key(article.id, mediaProxyBase, mediaHosts) {
         AndroidView(
-            modifier = Modifier
-                .fillMaxSize()
-                // 兜底：正文区域没被 WebView 消费掉的横向拖动也能翻页
-                .pointerInput(article.id) {
-                    var dragged = 0f
-                    detectHorizontalDragGestures(
-                        onDragStart = { dragged = 0f },
-                        onDragEnd = {
-                            if (abs(dragged) > 80f) {
-                                if (dragged < 0) onSwipeNext() else onSwipePrev()
-                            }
-                        },
-                    ) { _, amount -> dragged += amount }
-                },
+            modifier = Modifier.fillMaxSize(),
             factory = { ctx ->
                 ArticleWebView(ctx).apply {
                     onLinkClick = { url -> openExternal(context, url) }

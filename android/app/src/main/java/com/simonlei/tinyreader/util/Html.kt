@@ -104,6 +104,36 @@ fun rewriteHotlinkImages(
 
 private fun enc(s: String): String = URLEncoder.encode(s, "UTF-8")
 
+private val IMG_TAG_RE = Regex("<img\\b[^>]*>", RegexOption.IGNORE_CASE)
+
+/**
+ * 给正文里的图片补上懒加载与异步解码。
+ *
+ * 图片一多，WebView 会把整篇的图一次性下载并同步解码：解码卡在光栅流程里，
+ * 滚动一帧就掉；几十张图同时驻留内存还会让 WebView 丢掉已解码的位图，回滚时又得重解。
+ * 屏外的图不加载（`loading=lazy`）、加载的图后台解码（`decoding=async`），滚动才跟得上。
+ */
+internal fun decorateImages(html: String): String {
+    if (html.isEmpty()) return html
+    return IMG_TAG_RE.replace(html) { m ->
+        val tag = m.value
+        val extra = buildString {
+            if (!hasAttr(tag, "loading")) append(" loading=\"lazy\"")
+            if (!hasAttr(tag, "decoding")) append(" decoding=\"async\"")
+        }
+        if (extra.isEmpty()) return@replace tag
+        val close = tag.lastIndexOf('>')
+        if (close <= 0) return@replace tag
+        // 自闭合写法 `<img ... />` 要插到斜杠前面
+        val at = if (tag[close - 1] == '/') close - 1 else close
+        tag.substring(0, at) + extra + tag.substring(at)
+    }
+}
+
+/** 注意别把 `data-loading=` 这类自定义属性当成原生属性 */
+private fun hasAttr(tag: String, name: String): Boolean =
+    Regex("(?<![\\w-])$name\\s*=", RegexOption.IGNORE_CASE).containsMatchIn(tag)
+
 private fun escapeHtml(s: String): String = s
     .replace("&", "&amp;")
     .replace("<", "&lt;")
@@ -128,11 +158,13 @@ fun buildArticleHtml(
         ?: article.summary?.takeIf { it.isNotBlank() }
         ?: ""
     val local = mediaProxyBase.trim()
-    val body = rewriteHotlinkImages(
-        absolutizeHtml(rawBody, article.feedSiteUrl),
-        if (local.isNotEmpty()) local else serverUrl,
-        if (local.isNotEmpty()) "" else token,
-        mediaHosts,
+    val body = decorateImages(
+        rewriteHotlinkImages(
+            absolutizeHtml(rawBody, article.feedSiteUrl),
+            if (local.isNotEmpty()) local else serverUrl,
+            if (local.isNotEmpty()) "" else token,
+            mediaHosts,
+        )
     )
 
     val onlySummary = article.content.isNullOrBlank() && !article.summary.isNullOrBlank()
