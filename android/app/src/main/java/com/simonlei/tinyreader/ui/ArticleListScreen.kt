@@ -108,6 +108,16 @@ fun ArticleListScreen(
         }
     }
 
+    // 刷新（顶栏 ⟳ / 下拉 / 抽屉里拉取所有源 / 单独刷某个源）之后回到列表顶部。
+    // 记住进入界面时的令牌，避免从阅读页返回时也被当成「刚刷新」而跳到顶部。
+    var lastScrollTopToken = remember { ui.scrollTopToken }
+    LaunchedEffect(ui.scrollTopToken) {
+        if (ui.scrollTopToken != lastScrollTopToken) {
+            lastScrollTopToken = ui.scrollTopToken
+            listState.scrollToItem(0)
+        }
+    }
+
     // 无限滚动：接近底部时加载下一页（对应桌面端距底 240px 触发）
     LaunchedEffect(listState) {
         snapshotFlow { listState.layoutInfo.visibleItemsInfo.lastOrNull()?.index ?: -1 }

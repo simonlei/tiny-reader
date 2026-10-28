@@ -60,6 +60,11 @@ data class UiState(
     val refreshInfo: RefreshStatus = RefreshStatus(),
     /** 从服务端重载当前文章列表（不抓 RSS），对应桌面端 `reloading` */
     val reloading: Boolean = false,
+    /**
+     * 刷新完成后让列表滚回顶部的令牌。每次刷新 +1，界面比对到变化就滚一次；
+     * 用递增整数而不是 Boolean，避免「刷新期间界面离开组合」丢掉这次事件。
+     */
+    val scrollTopToken: Int = 0,
 
     // --- 移动端特有的界面状态 ---
     val serverUrl: String = "",
@@ -463,11 +468,15 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                     launch { doLoadStats() }
                 }
                 doLoadArticles(true)
+                requestScrollTop()
             } finally {
                 _ui.update { it.copy(reloading = false) }
             }
         }
     }
+
+    /** 刷新类操作重载列表后调用：列表回到顶部 */
+    private fun requestScrollTop() = _ui.update { it.copy(scrollTopToken = it.scrollTopToken + 1) }
 
     fun refreshAll() {
         if (_ui.value.refreshing) return
@@ -485,6 +494,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                 doLoadFeeds()
                 doLoadStats()
                 doLoadArticles(true)
+                requestScrollTop()
             } catch (e: Throwable) {
                 handleError(e)
             } finally {
@@ -500,6 +510,7 @@ class ReaderViewModel(app: Application) : AndroidViewModel(app) {
                 doLoadFeeds()
                 doLoadStats()
                 doLoadArticles(true)
+                requestScrollTop()
                 showToast("刷新完成，新增 ${res.newArticles} 篇")
             } catch (e: Throwable) {
                 handleError(e)
