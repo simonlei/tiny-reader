@@ -13,11 +13,11 @@ class AppUpdateTest {
     @Test
     fun `清单地址和安装包地址钉在发布通道上`() {
         assertEquals(
-            "https://tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com/android.json",
+            "https://fynancufrubtbyykddsx.supabase.co/storage/v1/object/public/tinyreader/android.json",
             UPDATE_MANIFEST_URL,
         )
         assertEquals(
-            "https://tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com/tiny-reader-android-v0.2.0.bin",
+            "https://fynancufrubtbyykddsx.supabase.co/storage/v1/object/public/tinyreader/tiny-reader-android-v0.2.0.bin",
             expectedApkUrl("0.2.0"),
         )
     }

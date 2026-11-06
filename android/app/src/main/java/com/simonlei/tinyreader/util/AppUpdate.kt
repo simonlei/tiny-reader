@@ -7,16 +7,16 @@ import java.io.OutputStream
 import java.security.MessageDigest
 
 /**
- * 安卓更新通道。清单和安装包都在桌面端同一个 CDN 上。
- * 地址写死在这里，发布脚本 `.github/workflows/release.yml` 必须传到同一个 host，
- * 安装包在 COS 上的对象名是 `tiny-reader-android-vX.Y.Z.bin`。
+ * 安卓更新通道。清单和安装包都在桌面端同一个 Supabase Storage 公开 bucket 上。
+ * 地址写死在这里，发布脚本 `.github/workflows/release.yml` 必须传到同一个基地址，
+ * 安装包在 Storage 上的对象名是 `tiny-reader-android-vX.Y.Z.bin`。
  *
- * 为什么是 .bin 不是 .apk：腾讯云 COS 不允许用默认域名（*.cos.<region>.myqcloud.com）
- * 在公网分发 APK/IPA，GET 一律返回 403 DownloadForbidden，必须绑自定义域名才放行 .apk。
- * 改扩展名即可绕过（只影响远端对象名，下载到本地仍按 .apk 交给系统安装器）。
+ * 为什么是 .bin 不是 .apk：早期用腾讯云 COS 时默认域名禁止公网分发 APK，
+ * 改名绕过；已发布客户端把 .bin 写死在 expectedApkUrl 的校验里，
+ * 迁到 Supabase 后仍须保持一致，否则旧客户端会拒绝更新。
  */
-const val UPDATE_CDN_HOST = "tiny-reader-1251477527.cos.ap-guangzhou.myqcloud.com"
-const val UPDATE_MANIFEST_URL = "https://$UPDATE_CDN_HOST/android.json"
+const val UPDATE_CDN_BASE = "https://fynancufrubtbyykddsx.supabase.co/storage/v1/object/public/tinyreader"
+const val UPDATE_MANIFEST_URL = "$UPDATE_CDN_BASE/android.json"
 const val MAX_APK_BYTES = 80L * 1024 * 1024
 
 data class UpdateOffer(
@@ -57,12 +57,12 @@ private data class SemVer(val major: Long, val minor: Long, val patch: Long) : C
 
 fun expectedApkUrl(version: String): String {
     val ver = version.trim().removePrefix("v").trim()
-    return "https://$UPDATE_CDN_HOST/tiny-reader-android-v$ver.bin"
+    return "$UPDATE_CDN_BASE/tiny-reader-android-v$ver.bin"
 }
 
 /**
  * 读发布通道上的 android.json。远程版本不比当前新时返回 [UpdateDecision.UpToDate]，
- * 更高时只接受钉死在 CDN 上、且文件名与版本号一致的安装包。
+ * 更高时只接受钉死在发布通道上、且文件名与版本号一致的安装包。
  */
 fun decideUpdate(manifestJsonText: String, currentVersion: String): UpdateDecision {
     val dto = try {

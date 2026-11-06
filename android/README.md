@@ -99,13 +99,13 @@ cd android
 
 ## 应用内升级
 
-设置页的「检查更新」，以及进入主界面后的自动检查，读的都是 CDN 上的 `android.json`（和桌面端 `latest.json` 同一个域名）。远程版本更高时，点「下载并安装」会下载 `tiny-reader-android-vX.Y.Z.bin`，用清单里的 sha256 校验，再打开系统安装器覆盖安装。
+设置页的「检查更新」，以及进入主界面后的自动检查，读的都是发布通道（Supabase Storage 公开 bucket）上的 `android.json`（和桌面端 `latest.json` 同一个基地址）。远程版本更高时，点「下载并安装」会下载 `tiny-reader-android-vX.Y.Z.bin`，用清单里的 sha256 校验，再打开系统安装器覆盖安装。
 
-CDN 上的安装包叫 `.bin` 而不是 `.apk`：腾讯云 COS 不允许用默认域名（`*.cos.<region>.myqcloud.com`）在公网分发 APK/IPA，`.apk` 一律返回 `403 DownloadForbidden`，只有绑定自定义域名才放行。改扩展名即可绕开。这只是远端对象名，下载到本地仍按 `.apk` 交给系统安装器，安装行为不受影响。GitHub Release 上的资源名保持 `.apk`，方便手动下载。
+发布通道上的安装包叫 `.bin` 而不是 `.apk`：早期用腾讯云 COS 时，默认域名（`*.cos.<region>.myqcloud.com`）禁止公网分发 APK/IPA，`.apk` 一律返回 `403 DownloadForbidden`，改名可绕开。现已迁到 Supabase Storage，但已发布客户端把 `.bin` 写死在安装包地址校验里，所以对象名必须继续沿用，不能改。这只是远端对象名，下载到本地仍按 `.apk` 交给系统安装器，安装行为不受影响。GitHub Release 上的资源名保持 `.apk`，方便手动下载。
 
-安装包地址必须是该 CDN 上、文件名和版本号一致的包，其它地址会直接拒绝。第一次升级时系统可能要求允许「安装未知应用」，允许后返回会继续打开安装器。
+安装包地址必须是该发布通道上、文件名和版本号一致的包，其它地址会直接拒绝。第一次升级时系统可能要求允许「安装未知应用」，允许后返回会继续打开安装器。
 
-发布脚本会把安装包（改名 `.bin`）和 `android.json` 同步到 CDN。覆盖安装还要求签名证书和手机上的包一致。
+发布脚本会把安装包（改名 `.bin`）和 `android.json` 同步到 Supabase Storage 的公开 bucket。覆盖安装还要求签名证书和手机上的包一致。
 
 `local.properties` 里的 `sdk.dir` 指向本机 SDK；用 Android Studio 直接打开 `android/` 目录也可以。
 
