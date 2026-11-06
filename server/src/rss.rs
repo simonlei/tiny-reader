@@ -146,7 +146,9 @@ impl Fetcher {
         parse_feed_body(&url, &body, etag, last_modified).map(FetchOutcome::Updated)
     }
 
-    /// 日报：把 `{date}` 换成东八区的昨天再抓。
+    /// 日报：把 `{date}` 换成东八区的 7 天前再抓。
+    /// 煎蛋近 7 天的日报是订阅会员权益（游客只拿到 need_login + 空列表），
+    /// 所以固定延迟 7 天；免费的第一天正好是「今天 - 7 天」。
     /// 煎蛋的页面是空壳，正文在热评接口里，而且不带 Referer 会返回空数据。
     async fn fetch_daily(&self, stored: &str) -> Result<FetchOutcome, String> {
         let plan = daily::plan_daily_request(stored, Utc::now())?;

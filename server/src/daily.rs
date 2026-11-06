@@ -1,6 +1,8 @@
-//! 日报订阅：地址里带日期，每次刷新拉取东八区的「昨天」。
+//! 日报订阅：地址里带日期，每次刷新拉取东八区的「7 天前」。
 //!
 //! 库里存的是 `daily://https://example.com/digest/{date}`。
+//! 煎蛋近 7 天（含今天）的日报是订阅会员权益，游客请求只会拿到 need_login + 空列表，
+//! 所以固定延迟 7 天、随日期滚动；免费的第一天正好是「今天 - 7 天」。
 //! 煎蛋这种页面正文由接口另拉，普通日报则直接抓当天的 HTML。
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
@@ -63,13 +65,18 @@ pub fn normalize_daily_input(input: &str) -> Option<String> {
     Some(format!("daily://{templated}"))
 }
 
-/// 东八区日历上的昨天。服务器时区不一定是中国，日报按读者所在的这一天算。
-pub fn china_yesterday(now: DateTime<Utc>) -> NaiveDate {
+/// 煎蛋近 7 天（含今天）的日报为订阅会员权益，游客只能看更早的内容。
+/// 实测 2026-11-06 时 10-31 ~ 11-06 均为 need_login，10-30 起恢复 guest_limited，
+/// 所以免费的第一天正好是「今天 - 7 天」。政策若变，只改这个常量。
+pub const DAILY_DELAY_DAYS: i64 = 7;
+
+/// 东八区日历上本次该拉的日期。服务器时区不一定是中国，按读者所在的这一天算。
+pub fn china_daily_day(now: DateTime<Utc>) -> NaiveDate {
     let offset = FixedOffset::east_opt(8 * 3600).expect("东八区偏移");
     let today = now.with_timezone(&offset).date_naive();
     today
-        .checked_sub_signed(Duration::days(1))
-        .expect("昨天的日期")
+        .checked_sub_signed(Duration::days(DAILY_DELAY_DAYS))
+        .expect("7 天前的日期")
 }
 
 pub fn plan_daily_request(stored: &str, now: DateTime<Utc>) -> Result<DailyRequest, String> {
@@ -79,7 +86,7 @@ pub fn plan_daily_request(stored: &str, now: DateTime<Utc>) -> Result<DailyReque
     if !template.contains("{date}") {
         return Err("日报地址里没有 {date}".into());
     }
-    let day = china_yesterday(now);
+    let day = china_daily_day(now);
     let page_url = template.replace("{date}", &day.format("%Y-%m-%d").to_string());
     if is_jandan_daily_page(&page_url) {
         Ok(DailyRequest::Jandan {
@@ -214,19 +221,21 @@ pub fn jandan_empty_error(
         )
     } else if access.eq_ignore_ascii_case("need_login") {
         if cookie_configured {
-            "服务端把本次请求判为未登录，最常见的原因是配置的登录 Cookie 已过期或不被接受。请重新登录煎蛋并更新 [jandan].cookie / TINY_READER_JANDAN_COOKIE；若确认 Cookie 有效，则可能是这一天尚未发布日报，换一个已有日报的日期刷新即可区分"
-                .to_string()
+            format!(
+                "服务端把本次请求判为未登录，最常见的原因是配置的登录 Cookie 已过期或不被接受。请重新登录煎蛋并更新 [jandan].cookie / TINY_READER_JANDAN_COOKIE；若确认 Cookie 有效且请求日期已是东八区 {DAILY_DELAY_DAYS} 天前，说明会员权益期可能已延长或当天日报停更，换一个更早的日期刷新即可区分"
+            )
         } else {
-            "服务端要求登录后才能返回日报内容，而当前没有配置登录 Cookie。请在 [jandan].cookie 或环境变量 TINY_READER_JANDAN_COOKIE 中填入浏览器登录后的 Cookie；也可能是这一天尚未发布日报，换一个已有日报的日期刷新即可区分"
-                .to_string()
+            format!(
+                "服务端要求登录后才能返回日报内容，而当前没有配置登录 Cookie。请在 [jandan].cookie 或环境变量 TINY_READER_JANDAN_COOKIE 中填入浏览器登录后的 Cookie；若请求日期已是东八区 {DAILY_DELAY_DAYS} 天前，说明会员权益期可能已延长或当天日报停更，换一个更早的日期刷新即可区分"
+            )
         }
     } else if access.eq_ignore_ascii_case("guest_limited") {
         format!(
-            "服务端只开放了游客额度，但这次连游客额度里也没有条目（{requested}）。可能是当天日报尚未发布或停更；本程序固定按东八区「昨天」拉取，凌晨刷新时昨天的日报可能还没生成"
+            "服务端只开放了游客额度，但这次连游客额度里也没有条目（{requested}）。东八区 {DAILY_DELAY_DAYS} 天前的日报通常早已发布，更可能是当天停更；本程序固定按这个延迟拉取，以避开近 {DAILY_DELAY_DAYS} 天的会员权益期"
         )
     } else {
         format!(
-            "服务端返回 total=0 且列表为空，说明 {requested} 这一天确实没有可读取的日报内容。可能是当天停更，或刷新时间早于当天日报发布；本程序固定按东八区「昨天」拉取，不会自动回退到更早的日期"
+            "服务端返回 total=0 且列表为空，说明 {requested} 这一天确实没有可读取的日报内容，可能是当天停更；本程序固定按东八区 {DAILY_DELAY_DAYS} 天前拉取，以避开近 {DAILY_DELAY_DAYS} 天的会员权益期，不会自动回退到更早的日期"
         )
     };
 
@@ -267,14 +276,15 @@ pub fn jandan_has_more(
 
 pub fn jandan_edition(entries: Vec<NewArticle>, total: i64, is_login: bool) -> DailyEdition {
     let n = entries.len() as i64;
+    let day_desc = format!("按东八区 {DAILY_DELAY_DAYS} 天前拉取");
     let description = if total > n {
         if is_login {
-            format!("按东八区昨天拉取。本次拿到 {n} 条，当天共 {total} 条。")
+            format!("{day_desc}。本次拿到 {n} 条，当天共 {total} 条。")
         } else {
-            format!("按东八区昨天拉取。未登录只能拿到热度前 {n} 条，当天共 {total} 条。")
+            format!("{day_desc}。未登录只能拿到热度前 {n} 条，当天共 {total} 条。")
         }
     } else {
-        format!("按东八区昨天拉取，当天 {n} 条。")
+        format!("{day_desc}，当天 {n} 条。")
     };
     DailyEdition {
         title: Some("煎蛋日报".into()),
@@ -313,7 +323,7 @@ pub fn parse_html_daily(
     Ok(DailyEdition {
         title: Some(feed_title),
         site_url: origin_of(page_url),
-        description: Some("按东八区昨天拉取的日报页面".into()),
+        description: Some(format!("按东八区 {DAILY_DELAY_DAYS} 天前拉取的日报页面")),
         entries: vec![NewArticle {
             guid: page_url.to_string(),
             title: page_title,
@@ -741,9 +751,9 @@ mod tests {
     use chrono::{NaiveDate, TimeZone, Utc};
 
     use super::{
-        china_yesterday, jandan_api_url, jandan_edition, jandan_empty_error, jandan_has_more,
+        china_daily_day, jandan_api_url, jandan_edition, jandan_empty_error, jandan_has_more,
         normalize_daily_input, parse_html_daily, parse_jandan_daily, parse_jandan_page,
-        plan_daily_request, DailyRequest,
+        plan_daily_request, DailyRequest, DAILY_DELAY_DAYS,
     };
     use crate::db::NewArticle;
 
@@ -782,36 +792,48 @@ mod tests {
     }
 
     #[test]
-    fn yesterday_follows_china_calendar() {
-        // 2026-10-15 16:00 UTC = 2026-10-16 00:00 CST，昨天是 10 月 15 日
+    fn daily_day_follows_china_calendar() {
+        // 2026-10-15 16:00 UTC = 2026-10-16 00:00 CST，7 天前是 10 月 9 日
         let just_after_midnight = Utc.with_ymd_and_hms(2026, 10, 15, 16, 0, 0).unwrap();
         assert_eq!(
-            china_yesterday(just_after_midnight),
-            NaiveDate::from_ymd_opt(2026, 10, 15).unwrap()
+            china_daily_day(just_after_midnight),
+            NaiveDate::from_ymd_opt(2026, 10, 9).unwrap()
         );
-        // 差一秒还是 10 月 15 日，昨天是 14 日
+        // 差一秒还是 10 月 15 日，7 天前是 10 月 8 日
         let before_midnight = Utc.with_ymd_and_hms(2026, 10, 15, 15, 59, 59).unwrap();
         assert_eq!(
-            china_yesterday(before_midnight),
-            NaiveDate::from_ymd_opt(2026, 10, 14).unwrap()
+            china_daily_day(before_midnight),
+            NaiveDate::from_ymd_opt(2026, 10, 8).unwrap()
         );
-        // 3 月 1 日凌晨，昨天是 2 月 28 日
+        // 3 月 1 日凌晨跨月，7 天前是 2 月 22 日
         let march = Utc.with_ymd_and_hms(2026, 2, 28, 16, 30, 0).unwrap();
         assert_eq!(
-            china_yesterday(march),
-            NaiveDate::from_ymd_opt(2026, 2, 28).unwrap()
+            china_daily_day(march),
+            NaiveDate::from_ymd_opt(2026, 2, 22).unwrap()
+        );
+    }
+
+    /// 实测 2026-11-06：10-31 ~ 11-06 全是 need_login，10-30 起恢复 guest_limited。
+    /// 把会员权益边界钉在测试里，防止以后误改回「昨天」。
+    #[test]
+    fn daily_day_skips_member_only_window() {
+        let now = Utc.with_ymd_and_hms(2026, 11, 6, 4, 0, 0).unwrap();
+        assert_eq!(DAILY_DELAY_DAYS, 7);
+        assert_eq!(
+            china_daily_day(now),
+            NaiveDate::from_ymd_opt(2026, 10, 30).unwrap()
         );
     }
 
     #[test]
-    fn plan_fetches_yesterdays_jandan_api() {
+    fn plan_fetches_seven_days_ago_jandan_api() {
         let stored = "daily://https://jandan.net/new/daily/date/{date}";
-        // 2026-10-16 04:00 UTC = 当天中午（东八区），昨天是 10 月 15 日
+        // 2026-10-16 04:00 UTC = 当天中午（东八区），7 天前是 10 月 9 日
         let now = Utc.with_ymd_and_hms(2026, 10, 16, 4, 0, 0).unwrap();
         match plan_daily_request(stored, now).unwrap() {
             DailyRequest::Jandan { page_url, api_url } => {
-                assert_eq!(page_url, "https://jandan.net/new/daily/date/2026-10-15");
-                assert!(api_url.contains("date=2026-10-15"), "{api_url}");
+                assert_eq!(page_url, "https://jandan.net/new/daily/date/2026-10-09");
+                assert!(api_url.contains("date=2026-10-09"), "{api_url}");
                 assert!(api_url.contains("/api/v1/daily-hot/comments"), "{api_url}");
             }
             DailyRequest::Page { page_url } => panic!("应走煎蛋接口，实际请求了 {page_url}"),
@@ -824,7 +846,7 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 10, 16, 4, 0, 0).unwrap();
         match plan_daily_request(stored, now).unwrap() {
             DailyRequest::Page { page_url } => {
-                assert_eq!(page_url, "https://example.com/digest/2026-10-15/index.html");
+                assert_eq!(page_url, "https://example.com/digest/2026-10-09/index.html");
             }
             DailyRequest::Jandan { .. } => panic!("普通日报不应走煎蛋接口"),
         }
@@ -958,11 +980,12 @@ mod tests {
     }
 
     #[test]
-    fn empty_error_mentions_not_published_for_guest_limited() {
+    fn empty_error_mentions_stopped_publication_for_guest_limited() {
         let body = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":0,"is_login":false,"access":"guest_limited","list":[]}}"#;
         let page = parse_jandan_page(body).unwrap();
         let err = jandan_empty_error(&page, None, false);
-        assert!(err.contains("尚未发布"), "{err}");
+        assert!(err.contains("停更"), "{err}");
+        assert!(err.contains("7 天前"), "{err}");
         assert!(!err.contains("Cookie 已过期"), "{err}");
     }
 

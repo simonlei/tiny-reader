@@ -154,7 +154,7 @@ async function doDelete() {
         不加 <code>https://</code> 也可以，服务端会自动补上。粘贴普通网页地址时，会用
         RSSHub 自动找出可用路由；也可以直接填 <code>rsshub://zhihu/daily</code>。
         没有 RSS、但能按日期打开的日报，直接粘贴带
-        <code>/date/2026-10-15</code> 的地址，或加 <code>daily:</code> 前缀。每次刷新拉东八区的昨天，例如
+        <code>/date/2026-10-15</code> 的地址，或加 <code>daily:</code> 前缀。每次刷新拉东八区的 7 天前（煎蛋近 7 天日报为会员权益），例如
         <code>daily:https://jandan.net/new/daily/date/2026-10-15</code>。
       </p>
     </div>
