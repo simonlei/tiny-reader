@@ -158,6 +158,8 @@ impl Fetcher {
                 let mut seen = std::collections::HashSet::new();
                 let mut total = 0i64;
                 let mut logged_in = false;
+                // 空列表时用它区分「没配 Cookie」和「配了但已失效」
+                let cookie_configured = !self.jandan_cookie.trim().is_empty();
                 for requested in 1u32..=20 {
                     let url = daily::jandan_api_url(day, requested);
                     let cookie = jandan_cookie_for(&self.jandan_cookie, &url);
@@ -168,7 +170,11 @@ impl Fetcher {
                         break;
                     }
                     if requested == 1 && page.entries.is_empty() {
-                        return Err("这一天还没有日报内容".into());
+                        return Err(daily::jandan_empty_error(
+                            &page,
+                            Some(day),
+                            cookie_configured,
+                        ));
                     }
                     total = page.total;
                     logged_in = page.is_login;
@@ -196,7 +202,11 @@ impl Fetcher {
                     }
                 }
                 if entries.is_empty() {
-                    return Err("这一天还没有日报内容".into());
+                    // 第 1 页非空才会走到这里，所以这不是「没日报」，而是分页/去重流程异常。
+                    return Err(format!(
+                        "煎蛋日报 {} 翻完所有分页仍没有可用条目：第 1 页并非空列表，说明是分页或去重流程异常，而不是这一天没有日报。请检查服务端分页响应。",
+                        day.format("%Y-%m-%d")
+                    ));
                 }
                 daily::jandan_edition(entries, total, logged_in)
             }

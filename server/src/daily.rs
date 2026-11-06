@@ -102,31 +102,58 @@ pub struct JandanPage {
     pub page: i64,
     pub page_size: i64,
     pub is_login: bool,
+    /// 服务端实际返回的日报日期；无效日期会被服务端改写成别的日期
+    pub report_date: Option<String>,
+    /// 访问级别：`guest_limited`（游客限 10 条）、`need_login`（要求登录）等
+    pub access: Option<String>,
+    /// 响应里根本没有 `list` 字段，区别于「有字段但是空数组」
+    pub list_missing: bool,
     pub entries: Vec<NewArticle>,
 }
 
 pub fn parse_jandan_daily(body: &str) -> Result<DailyEdition, String> {
     let page = parse_jandan_page(body)?;
     if page.entries.is_empty() {
-        return Err("这一天还没有日报内容".into());
+        return Err(jandan_empty_error(&page, None, false));
     }
     Ok(jandan_edition(page.entries, page.total, page.is_login))
 }
 
 pub fn parse_jandan_page(body: &str) -> Result<JandanPage, String> {
-    let resp: JandanResp =
-        serde_json::from_str(body).map_err(|e| format!("煎蛋日报解析失败: {e}"))?;
+    let resp: JandanResp = serde_json::from_str(body).map_err(|e| {
+        format!(
+            "煎蛋日报响应不是合法 JSON（{e}）：多半是请求被反爬/WAF 拦截、跳到了登录页，或接口已改版。响应开头：{}",
+            body_snippet(body, 160)
+        )
+    })?;
     if resp.code != 0 {
         let msg = resp.msg.trim();
         return Err(if msg.is_empty() {
-            format!("煎蛋日报返回错误（code {}）", resp.code)
+            format!(
+                "煎蛋日报返回错误码 code={}，但没有给出说明。响应开头：{}",
+                resp.code,
+                body_snippet(body, 160)
+            )
         } else {
-            format!("煎蛋日报返回错误：{msg}")
+            format!("煎蛋日报返回错误（code={}）：{}", resp.code, msg)
         });
     }
-    let data = resp
-        .data
-        .ok_or_else(|| "煎蛋日报没有返回内容（可能被拦截，或这一天还没发布）".to_string())?;
+    let code = resp.code;
+    let msg = resp.msg.trim().to_string();
+    let msg_part = if msg.is_empty() {
+        String::new()
+    } else {
+        format!("，msg={msg}")
+    };
+    // 注意：服务端在「需要登录」「当天没发布」「日期无效」时都可能回 data=null，
+    // 这句话不能断定是哪一种，只把已知事实摆出来。
+    let data = resp.data.ok_or_else(|| {
+        format!(
+            "煎蛋日报返回的 data 为 null（code={code}{msg_part}）：可能是请求被拦截、登录态失效，或这一天还没发布。响应开头：{}",
+            body_snippet(body, 160)
+        )
+    })?;
+    let list_missing = data.list.is_none();
     let list = data.list.unwrap_or_default();
     let entries = list
         .iter()
@@ -134,12 +161,86 @@ pub fn parse_jandan_page(body: &str) -> Result<JandanPage, String> {
         .collect::<Vec<_>>();
     let total = data.total.unwrap_or(entries.len() as i64);
     Ok(JandanPage {
+        report_date: data.report_date,
+        access: data.access,
+        list_missing,
         total,
         page: data.page.unwrap_or(1),
         page_size: data.page_size.unwrap_or(entries.len() as i64),
         is_login: data.is_login,
         entries,
     })
+}
+
+/// 一页内容都没有时，把服务端返回的事实拼成能说明原因的报错。
+///
+/// 煎蛋在「需要登录」「当天未发布」「日期无效」「被限流」时都会回
+/// `code=0 + data.total=0 + data.list=[]`，只看空列表分不清，
+/// 所以把 access / is_login / report_date / total / list 状态都回显出来，
+/// 再按最可能的原因给出可操作的下一步。
+pub fn jandan_empty_error(
+    page: &JandanPage,
+    requested_day: Option<NaiveDate>,
+    cookie_configured: bool,
+) -> String {
+    let requested = requested_day
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "未知".to_string());
+    let reported = page.report_date.as_deref().unwrap_or("缺失");
+    let access = page.access.as_deref().unwrap_or("缺失");
+    let list_state = if page.list_missing {
+        "list 字段缺失"
+    } else {
+        "list 为空数组"
+    };
+
+    let mut facts = format!(
+        "请求日期 {requested}，服务端 report_date {reported}，total {}，is_login {}，access {access}，{list_state}",
+        page.total, page.is_login
+    );
+    if reported != "缺失" && reported != requested {
+        facts.push_str(&format!(
+            "；注意服务端实际返回的日期（{reported}）与请求日期（{requested}）不一致，可能是该日期无效或服务端按其它规则处理"
+        ));
+    }
+
+    let reason = if page.list_missing {
+        "响应里没有 list 字段，接口返回结构可能已改版，当前解析器取不到正文。请检查接口原始响应并更新 JandanData 的字段映射"
+            .to_string()
+    } else if page.total > 0 && page.entries.is_empty() {
+        format!(
+            "服务端声称当天有 {} 条，却一条都没返回，多半是接口改版、分页参数失效或请求被限流/拦截，并不是这一天没有日报",
+            page.total
+        )
+    } else if access.eq_ignore_ascii_case("need_login") {
+        if cookie_configured {
+            "服务端把本次请求判为未登录，最常见的原因是配置的登录 Cookie 已过期或不被接受。请重新登录煎蛋并更新 [jandan].cookie / TINY_READER_JANDAN_COOKIE；若确认 Cookie 有效，则可能是这一天尚未发布日报，换一个已有日报的日期刷新即可区分"
+                .to_string()
+        } else {
+            "服务端要求登录后才能返回日报内容，而当前没有配置登录 Cookie。请在 [jandan].cookie 或环境变量 TINY_READER_JANDAN_COOKIE 中填入浏览器登录后的 Cookie；也可能是这一天尚未发布日报，换一个已有日报的日期刷新即可区分"
+                .to_string()
+        }
+    } else if access.eq_ignore_ascii_case("guest_limited") {
+        format!(
+            "服务端只开放了游客额度，但这次连游客额度里也没有条目（{requested}）。可能是当天日报尚未发布或停更；本程序固定按东八区「昨天」拉取，凌晨刷新时昨天的日报可能还没生成"
+        )
+    } else {
+        format!(
+            "服务端返回 total=0 且列表为空，说明 {requested} 这一天确实没有可读取的日报内容。可能是当天停更，或刷新时间早于当天日报发布；本程序固定按东八区「昨天」拉取，不会自动回退到更早的日期"
+        )
+    };
+
+    format!("煎蛋日报没有拿到任何内容（{facts}）。原因：{reason}。")
+}
+
+/// 把响应体压成一行并截短，方便在报错里判断「返回的是不是拦截页」。
+fn body_snippet(body: &str, max: usize) -> String {
+    let one_line: String = body
+        .chars()
+        .take(max * 2)
+        .map(|c| if c.is_whitespace() { ' ' } else { c })
+        .collect();
+    truncate_chars(one_line.trim(), max)
 }
 
 /// 这一页的内容该不该收，以及要不要继续请求下一页。
@@ -603,11 +704,15 @@ struct JandanResp {
 
 #[derive(Debug, Deserialize)]
 struct JandanData {
+    report_date: Option<String>,
     total: Option<i64>,
     page: Option<i64>,
     page_size: Option<i64>,
     #[serde(default)]
     is_login: bool,
+    /// 服务端给的访问级别：guest_limited / need_login 等。
+    /// 以前这个字段被 serde 静默丢掉，导致「要登录」被误报成「没有日报」。
+    access: Option<String>,
     list: Option<Vec<JandanComment>>,
 }
 
@@ -636,8 +741,9 @@ mod tests {
     use chrono::{NaiveDate, TimeZone, Utc};
 
     use super::{
-        china_yesterday, jandan_api_url, jandan_edition, jandan_has_more, normalize_daily_input,
-        parse_html_daily, parse_jandan_daily, plan_daily_request, DailyRequest,
+        china_yesterday, jandan_api_url, jandan_edition, jandan_empty_error, jandan_has_more,
+        normalize_daily_input, parse_html_daily, parse_jandan_daily, parse_jandan_page,
+        plan_daily_request, DailyRequest,
     };
     use crate::db::NewArticle;
 
@@ -789,12 +895,96 @@ mod tests {
         assert_eq!(text.author.as_deref(), Some("啊啊啊 · 青岛"));
     }
 
+    /// 实测：需要登录时服务端回的是 200 + code=0 + 空 list，不是 401
+    const NEED_LOGIN: &str = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":0,"page":1,"page_size":50,"is_login":false,"access":"need_login","list":[]}}"#;
+
     #[test]
     fn parse_jandan_rejects_empty() {
         let body = r#"{"code":0,"msg":"success","data":null}"#;
-        assert!(parse_jandan_daily(body).is_err());
+        let err = parse_jandan_daily(body).err().unwrap();
+        assert!(err.contains("data 为 null"), "{err}");
         let empty = r#"{"code":0,"msg":"success","data":{"total":0,"list":[]}}"#;
-        assert!(parse_jandan_daily(empty).is_err());
+        let err = parse_jandan_daily(empty).err().unwrap();
+        assert!(err.contains("没有拿到任何内容"), "{err}");
+    }
+
+    #[test]
+    fn parse_jandan_page_keeps_diagnostic_fields() {
+        let page = parse_jandan_page(NEED_LOGIN).unwrap();
+        assert!(page.entries.is_empty());
+        assert_eq!(page.report_date.as_deref(), Some("2026-11-05"));
+        assert_eq!(page.access.as_deref(), Some("need_login"));
+        assert!(!page.list_missing);
+        assert!(!page.is_login);
+    }
+
+    #[test]
+    fn empty_error_explains_expired_cookie() {
+        let page = parse_jandan_page(NEED_LOGIN).unwrap();
+        let day = NaiveDate::from_ymd_opt(2026, 11, 5).unwrap();
+        let err = jandan_empty_error(&page, Some(day), true);
+        assert!(err.contains("need_login"), "{err}");
+        assert!(err.contains("is_login false"), "{err}");
+        assert!(err.contains("Cookie 已过期"), "{err}");
+        assert!(err.contains("TINY_READER_JANDAN_COOKIE"), "{err}");
+    }
+
+    #[test]
+    fn empty_error_explains_missing_cookie() {
+        let page = parse_jandan_page(NEED_LOGIN).unwrap();
+        let err = jandan_empty_error(&page, None, false);
+        assert!(err.contains("没有配置登录 Cookie"), "{err}");
+        assert!(err.contains("[jandan].cookie"), "{err}");
+        assert!(!err.contains("已过期"), "{err}");
+    }
+
+    #[test]
+    fn empty_error_detects_changed_response_shape() {
+        let body = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":0,"is_login":false,"access":"guest_limited"}}"#;
+        let page = parse_jandan_page(body).unwrap();
+        assert!(page.list_missing);
+        let err = jandan_empty_error(&page, None, false);
+        assert!(err.contains("list 字段缺失"), "{err}");
+        assert!(err.contains("改版"), "{err}");
+    }
+
+    #[test]
+    fn empty_error_detects_total_without_entries() {
+        let body = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":62,"is_login":false,"access":"guest_limited","list":[]}}"#;
+        let page = parse_jandan_page(body).unwrap();
+        let err = jandan_empty_error(&page, None, false);
+        assert!(err.contains("62"), "{err}");
+        assert!(err.contains("并不是这一天没有日报"), "{err}");
+    }
+
+    #[test]
+    fn empty_error_mentions_not_published_for_guest_limited() {
+        let body = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":0,"is_login":false,"access":"guest_limited","list":[]}}"#;
+        let page = parse_jandan_page(body).unwrap();
+        let err = jandan_empty_error(&page, None, false);
+        assert!(err.contains("尚未发布"), "{err}");
+        assert!(!err.contains("Cookie 已过期"), "{err}");
+    }
+
+    #[test]
+    fn empty_error_flags_date_rewrite() {
+        let body = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-06","total":0,"is_login":false,"access":"need_login","list":[]}}"#;
+        let page = parse_jandan_page(body).unwrap();
+        let err = jandan_empty_error(
+            &page,
+            Some(NaiveDate::from_ymd_opt(2026, 11, 5).unwrap()),
+            false,
+        );
+        assert!(err.contains("不一致"), "{err}");
+    }
+
+    #[test]
+    fn parse_jandan_non_json_explains_interception() {
+        let err = parse_jandan_page("<!doctype html><html><title>Just a moment...</title></html>")
+            .err()
+            .unwrap();
+        assert!(err.contains("不是合法 JSON"), "{err}");
+        assert!(err.contains("Just a moment"), "{err}");
     }
 
     #[test]
