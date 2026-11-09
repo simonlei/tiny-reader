@@ -204,9 +204,35 @@ jobs:
 
       - name: Gradle cache
         # Gradle 依赖缓存。key 含 gradle 文件哈希，依赖变更自动失效。
+        # 本 workflow 只在 tag 上触发，而 tag 作用域的缓存对其他 tag/重跑不可见；
+        # 且失败 job 不会写出缓存，所以必须让「冷启动下载」本身足够可靠。
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: false
+
+      - name: Pre-fetch Gradle distribution (with retries)
+        # Gradle 8.11.1 的 wrapper 还不支持 retries/retryBackOffMs（9.x 才加入），
+        # 下载超时会直接抛 IOException 退出；失败时还可能残留 .lck/.part，
+        # 让后续 ./gradlew 卡在锁上。这里先把发行版单独预热好：
+        #   - 失败即清理残留并退避重试，避免一次网络抖动毁掉整个发布；
+        #   - 成功后已解压进 ~/.gradle/wrapper/dists，assembleRelease 不再下载。
+        working-directory: android
+        shell: bash
+        run: |
+          set -uo pipefail
+          chmod +x gradlew
+          DIST_DIR="${GRADLE_USER_HOME:-$HOME/.gradle}/wrapper/dists"
+          for i in 1 2 3 4 5; do
+            if ./gradlew --version --no-daemon; then
+              echo "Gradle distribution ready on attempt $i"
+              exit 0
+            fi
+            echo "::warning::Gradle distribution download failed (attempt $i/5)"
+            find "$DIST_DIR" -type f \( -name '*.lck' -o -name '*.part' \) -delete 2>/dev/null || true
+            sleep $((i * 10))
+          done
+          echo "::error::failed to download Gradle distribution after 5 attempts"
+          exit 1
 
       - name: Bump version from tag
         # 与桌面端一致：由 tag 注入 versionName，源码不回写 git。
