@@ -89,7 +89,7 @@ fun FeedEditDialog(
                     modifier = Modifier.fillMaxWidth(),
                 )
                 Text(
-                    "不加 https:// 也可以。日报可粘贴 /date/2026-10-15 这种地址，或加 daily: 前缀，每次拉东八区的 7 天前（煎蛋近 7 天日报为会员权益）。",
+                    "不加 https:// 也可以。日报可粘贴 /date/2026-10-15 这种地址，或加 daily: 前缀，每次从东八区 7 天前开始拉；煎蛋若当天仍是会员内容或没有更新，会自动改拉更早有内容的一天。",
                     fontSize = 11.sp,
                     color = TextMute,
                     modifier = Modifier.padding(start = 4.dp, top = 4.dp),

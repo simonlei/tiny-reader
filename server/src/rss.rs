@@ -146,72 +146,14 @@ impl Fetcher {
         parse_feed_body(&url, &body, etag, last_modified).map(FetchOutcome::Updated)
     }
 
-    /// 日报：把 `{date}` 换成东八区的 7 天前再抓。
-    /// 煎蛋近 7 天的日报是订阅会员权益（游客只拿到 need_login + 空列表），
-    /// 所以固定延迟 7 天；免费的第一天正好是「今天 - 7 天」。
+    /// 日报：从东八区的 7 天前开始抓。
+    /// 煎蛋近几天的日报是订阅会员权益。游客拿到 need_login，已登录的非会员拿到
+    /// need_subscription，列表都是空的。从「今天 - 7 天」起逐日回退，直到有正文。
     /// 煎蛋的页面是空壳，正文在热评接口里，而且不带 Referer 会返回空数据。
     async fn fetch_daily(&self, stored: &str) -> Result<FetchOutcome, String> {
         let plan = daily::plan_daily_request(stored, Utc::now())?;
         let edition = match plan {
-            DailyRequest::Jandan { page_url, .. } => {
-                let day = iso_date_in(&page_url)
-                    .ok_or_else(|| "日报地址里没有可识别的日期".to_string())?;
-                let mut entries = Vec::new();
-                let mut seen = std::collections::HashSet::new();
-                let mut total = 0i64;
-                let mut logged_in = false;
-                // 空列表时用它区分「没配 Cookie」和「配了但已失效」
-                let cookie_configured = !self.jandan_cookie.trim().is_empty();
-                for requested in 1u32..=20 {
-                    let url = daily::jandan_api_url(day, requested);
-                    let cookie = jandan_cookie_for(&self.jandan_cookie, &url);
-                    let body = self.get_text(&url, Some(&page_url), cookie).await?;
-                    let page = daily::parse_jandan_page(&body)?;
-                    if requested > 1 && page.page != requested as i64 {
-                        // 未登录时第 2 页会退回第 1 页，丢掉这次结果
-                        break;
-                    }
-                    if requested == 1 && page.entries.is_empty() {
-                        return Err(daily::jandan_empty_error(
-                            &page,
-                            Some(day),
-                            cookie_configured,
-                        ));
-                    }
-                    total = page.total;
-                    logged_in = page.is_login;
-                    let page_len = page.entries.len();
-                    let page_size = page.page_size;
-                    let response_page = page.page;
-                    let mut added = 0usize;
-                    for entry in page.entries {
-                        if seen.insert(entry.guid.clone()) {
-                            entries.push(entry);
-                            added += 1;
-                        }
-                    }
-                    if added == 0
-                        || !daily::jandan_has_more(
-                            requested as i64,
-                            response_page,
-                            page_len,
-                            page_size,
-                            total,
-                            entries.len(),
-                        )
-                    {
-                        break;
-                    }
-                }
-                if entries.is_empty() {
-                    // 第 1 页非空才会走到这里，所以这不是「没日报」，而是分页/去重流程异常。
-                    return Err(format!(
-                        "煎蛋日报 {} 翻完所有分页仍没有可用条目：第 1 页并非空列表，说明是分页或去重流程异常，而不是这一天没有日报。请检查服务端分页响应。",
-                        day.format("%Y-%m-%d")
-                    ));
-                }
-                daily::jandan_edition(entries, total, logged_in)
-            }
+            DailyRequest::Jandan { .. } => self.fetch_jandan_daily(stored).await?,
             DailyRequest::Page { page_url } => {
                 let body = self.get_text(&page_url, Some(&page_url), None).await?;
                 if looks_like_feed(&body) {
@@ -225,6 +167,120 @@ impl Fetcher {
             }
         };
         Ok(FetchOutcome::Updated(edition_to_fetched(edition)))
+    }
+
+    /// 煎蛋从起始日往回找第一个有正文的日期。权益期或停更日跳过；
+    /// 配了 Cookie 仍被判未登录时立刻失败，不拿更早的游客额度掩盖。
+    async fn fetch_jandan_daily(&self, stored: &str) -> Result<DailyEdition, String> {
+        let days = daily::daily_candidate_days(Utc::now());
+        let nominal = days
+            .first()
+            .copied()
+            .ok_or_else(|| "无法计算日报日期".to_string())?;
+        let cookie_configured = !self.jandan_cookie.trim().is_empty();
+        let mut last_unavailable: Option<daily::JandanPage> = None;
+        let mut subscription_blocked = false;
+
+        for day in &days {
+            let page_url = daily::daily_page_url(stored, *day)?;
+            let url = daily::jandan_api_url(*day, 1);
+            let cookie = jandan_cookie_for(&self.jandan_cookie, &url);
+            let body = self.get_text(&url, Some(&page_url), cookie).await?;
+            let page = daily::parse_jandan_page(&body)?;
+            if page.entries.is_empty() {
+                if daily::jandan_day_unavailable(&page, cookie_configured) {
+                    if daily::jandan_requires_subscription(&page) {
+                        subscription_blocked = true;
+                    }
+                    last_unavailable = Some(page);
+                    continue;
+                }
+                return Err(daily::jandan_empty_error(
+                    &page,
+                    Some(*day),
+                    cookie_configured,
+                ));
+            }
+            let edition = self.collect_jandan_day(page, *day, &page_url).await?;
+            return Ok(daily::note_daily_fallback(
+                edition,
+                nominal,
+                *day,
+                subscription_blocked,
+            ));
+        }
+
+        let page = last_unavailable.ok_or_else(|| "煎蛋日报没有拿到任何内容".to_string())?;
+        Err(daily::jandan_lookback_error(
+            &page,
+            &days,
+            cookie_configured,
+        ))
+    }
+
+    async fn collect_jandan_day(
+        &self,
+        first: daily::JandanPage,
+        day: chrono::NaiveDate,
+        page_url: &str,
+    ) -> Result<DailyEdition, String> {
+        let mut entries = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut total = 0i64;
+        let mut logged_in = false;
+        let mut pending = Some(first);
+        for requested in 1u32..=20 {
+            let page = if let Some(page) = pending.take() {
+                page
+            } else {
+                let url = daily::jandan_api_url(day, requested);
+                let cookie = jandan_cookie_for(&self.jandan_cookie, &url);
+                let body = self.get_text(&url, Some(page_url), cookie).await?;
+                let page = daily::parse_jandan_page(&body)?;
+                if page.page != requested as i64 {
+                    // 未登录时第 2 页会退回第 1 页，丢掉这次结果
+                    break;
+                }
+                page
+            };
+            total = page.total;
+            logged_in = page.is_login;
+            let page_len = page.entries.len();
+            let page_size = page.page_size;
+            let response_page = page.page;
+            let mut added = 0usize;
+            for entry in page.entries {
+                if seen.insert(entry.guid.clone()) {
+                    entries.push(entry);
+                    added += 1;
+                }
+            }
+            if added == 0
+                || !daily::jandan_has_more(
+                    requested as i64,
+                    response_page,
+                    page_len,
+                    page_size,
+                    total,
+                    entries.len(),
+                )
+            {
+                break;
+            }
+        }
+        if entries.is_empty() {
+            // 第 1 页非空才会走到这里，所以这不是「没日报」，而是分页/去重流程异常。
+            return Err(format!(
+                "煎蛋日报 {} 翻完所有分页仍没有可用条目：第 1 页并非空列表，说明是分页或去重流程异常，而不是这一天没有日报。请检查服务端分页响应。",
+                day.format("%Y-%m-%d")
+            ));
+        }
+        Ok(daily::jandan_edition(
+            entries,
+            total,
+            logged_in,
+            Some(day),
+        ))
     }
 
     async fn get_text(

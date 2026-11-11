@@ -1,8 +1,9 @@
-//! 日报订阅：地址里带日期，每次刷新拉取东八区的「7 天前」。
+//! 日报订阅：地址里带日期，每次刷新从东八区的「7 天前」开始拉。
 //!
 //! 库里存的是 `daily://https://example.com/digest/{date}`。
-//! 煎蛋近 7 天（含今天）的日报是订阅会员权益，游客请求只会拿到 need_login + 空列表，
-//! 所以固定延迟 7 天、随日期滚动；免费的第一天正好是「今天 - 7 天」。
+//! 煎蛋近几天的日报是订阅会员权益：游客拿到 need_login，已登录的非会员拿到
+//! need_subscription，列表都是空的。起始日固定为「今天 - 7 天」；这一天仍被权益挡住或当天停更时，
+//! 逐日回退，直到读到有正文的一天。
 //! 煎蛋这种页面正文由接口另拉，普通日报则直接抓当天的 HTML。
 
 use chrono::{DateTime, Duration, FixedOffset, NaiveDate, Utc};
@@ -65,12 +66,18 @@ pub fn normalize_daily_input(input: &str) -> Option<String> {
     Some(format!("daily://{templated}"))
 }
 
-/// 煎蛋近 7 天（含今天）的日报为订阅会员权益，游客只能看更早的内容。
-/// 实测 2026-11-06 时 10-31 ~ 11-06 均为 need_login，10-30 起恢复 guest_limited，
-/// 所以免费的第一天正好是「今天 - 7 天」。政策若变，只改这个常量。
+/// 煎蛋日报的最早尝试日：东八区「今天 - 7 天」。
+///
+/// 2026-11-06 实测今天至今天-6 为 need_login，今天-7 起为 guest_limited。
+/// 2026-11-11 实测今天-7 已变成 need_login / need_subscription，今天-8 才有正文。
+/// 起始日仍停在 7 天前，权益期延长或当天停更时由 [`daily_candidate_days`] 继续往前找。
 pub const DAILY_DELAY_DAYS: i64 = 7;
 
-/// 东八区日历上本次该拉的日期。服务器时区不一定是中国，按读者所在的这一天算。
+/// 从起始日往前最多尝试多少天（含起始日）。
+/// 用来跳过仍在会员权益期内的日期，以及当天没有内容的停更日。
+pub const DAILY_LOOKBACK_DAYS: i64 = 14;
+
+/// 东八区日历上本次最先尝试的日期。服务器时区不一定是中国，按读者所在的这一天算。
 pub fn china_daily_day(now: DateTime<Utc>) -> NaiveDate {
     let offset = FixedOffset::east_opt(8 * 3600).expect("东八区偏移");
     let today = now.with_timezone(&offset).date_naive();
@@ -79,15 +86,27 @@ pub fn china_daily_day(now: DateTime<Utc>) -> NaiveDate {
         .expect("7 天前的日期")
 }
 
-pub fn plan_daily_request(stored: &str, now: DateTime<Utc>) -> Result<DailyRequest, String> {
+/// 从 [`china_daily_day`] 起按时间向前列出要尝试的日期，第一天是常规拉取日。
+pub fn daily_candidate_days(now: DateTime<Utc>) -> Vec<NaiveDate> {
+    let start = china_daily_day(now);
+    (0..DAILY_LOOKBACK_DAYS)
+        .filter_map(|offset| start.checked_sub_signed(Duration::days(offset)))
+        .collect()
+}
+
+pub fn daily_page_url(stored: &str, day: NaiveDate) -> Result<String, String> {
     let template = stored
         .strip_prefix("daily://")
         .ok_or_else(|| "不是日报地址".to_string())?;
     if !template.contains("{date}") {
         return Err("日报地址里没有 {date}".into());
     }
+    Ok(template.replace("{date}", &day.format("%Y-%m-%d").to_string()))
+}
+
+pub fn plan_daily_request(stored: &str, now: DateTime<Utc>) -> Result<DailyRequest, String> {
     let day = china_daily_day(now);
-    let page_url = template.replace("{date}", &day.format("%Y-%m-%d").to_string());
+    let page_url = daily_page_url(stored, day)?;
     if is_jandan_daily_page(&page_url) {
         Ok(DailyRequest::Jandan {
             api_url: jandan_api_url(day, 1),
@@ -123,7 +142,32 @@ pub fn parse_jandan_daily(body: &str) -> Result<DailyEdition, String> {
     if page.entries.is_empty() {
         return Err(jandan_empty_error(&page, None, false));
     }
-    Ok(jandan_edition(page.entries, page.total, page.is_login))
+    let day = page
+        .report_date
+        .as_deref()
+        .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+    Ok(jandan_edition(page.entries, page.total, page.is_login, day))
+}
+
+/// 这一页没有可读条目，并且换更早的日期有可能读到内容。
+///
+/// 接口改版、声称有条目却没返回，换日期也解决不了。
+/// 已经配置了 Cookie 仍被判为 need_login 时直接报错，避免用更早的游客额度掩盖登录失效。
+pub fn jandan_day_unavailable(page: &JandanPage, cookie_configured: bool) -> bool {
+    if !page.entries.is_empty() || page.list_missing || page.total > 0 {
+        return false;
+    }
+    let access = page.access.as_deref().unwrap_or("");
+    if access.eq_ignore_ascii_case("need_login") && cookie_configured {
+        return false;
+    }
+    true
+}
+
+pub fn jandan_requires_subscription(page: &JandanPage) -> bool {
+    page.access
+        .as_deref()
+        .is_some_and(|access| access.eq_ignore_ascii_case("need_subscription"))
 }
 
 pub fn parse_jandan_page(body: &str) -> Result<JandanPage, String> {
@@ -231,15 +275,46 @@ pub fn jandan_empty_error(
         }
     } else if access.eq_ignore_ascii_case("guest_limited") {
         format!(
-            "服务端只开放了游客额度，但这次连游客额度里也没有条目（{requested}）。东八区 {DAILY_DELAY_DAYS} 天前的日报通常早已发布，更可能是当天停更；本程序固定按这个延迟拉取，以避开近 {DAILY_DELAY_DAYS} 天的会员权益期"
+            "服务端只开放了游客额度，但这次连游客额度里也没有条目（{requested}）。东八区 {DAILY_DELAY_DAYS} 天前的日报通常早已发布，更可能是当天停更"
+        )
+    } else if access.eq_ignore_ascii_case("need_subscription") {
+        let who = if page.is_login {
+            "当前账号已登录"
+        } else {
+            "当前请求未登录"
+        };
+        format!(
+            "{who}（is_login {}），但服务端要求订阅会员才能阅读 {requested} 的日报（access=need_subscription）。这一天仍在会员权益期内，并不是当天没有内容",
+            page.is_login
         )
     } else {
         format!(
-            "服务端返回 total=0 且列表为空，说明 {requested} 这一天确实没有可读取的日报内容，可能是当天停更；本程序固定按东八区 {DAILY_DELAY_DAYS} 天前拉取，以避开近 {DAILY_DELAY_DAYS} 天的会员权益期，不会自动回退到更早的日期"
+            "服务端返回 total=0 且列表为空，说明 {requested} 这一天没有可读取的日报内容，可能是当天停更"
         )
     };
 
     format!("煎蛋日报没有拿到任何内容（{facts}）。原因：{reason}。")
+}
+
+/// 回退范围内每一天都没有可读内容时的报错。`tried` 从新到旧。
+pub fn jandan_lookback_error(
+    page: &JandanPage,
+    tried: &[NaiveDate],
+    cookie_configured: bool,
+) -> String {
+    let last = tried.last().copied();
+    let detail = jandan_empty_error(page, last, cookie_configured);
+    let first = tried
+        .first()
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "未知".into());
+    let end = last
+        .map(|d| d.format("%Y-%m-%d").to_string())
+        .unwrap_or_else(|| "未知".into());
+    format!(
+        "{detail} 已从 {first} 逐日回退到 {end}，共 {} 天都没有可读内容。",
+        tried.len()
+    )
 }
 
 /// 把响应体压成一行并截短，方便在报错里判断「返回的是不是拦截页」。
@@ -274,9 +349,17 @@ pub fn jandan_has_more(
     true
 }
 
-pub fn jandan_edition(entries: Vec<NewArticle>, total: i64, is_login: bool) -> DailyEdition {
+pub fn jandan_edition(
+    entries: Vec<NewArticle>,
+    total: i64,
+    is_login: bool,
+    day: Option<NaiveDate>,
+) -> DailyEdition {
     let n = entries.len() as i64;
-    let day_desc = format!("按东八区 {DAILY_DELAY_DAYS} 天前拉取");
+    let day_desc = match day {
+        Some(d) => format!("拉取 {}", d.format("%Y-%m-%d")),
+        None => format!("按东八区 {DAILY_DELAY_DAYS} 天前拉取"),
+    };
     let description = if total > n {
         if is_login {
             format!("{day_desc}。本次拿到 {n} 条，当天共 {total} 条。")
@@ -292,6 +375,36 @@ pub fn jandan_edition(entries: Vec<NewArticle>, total: i64, is_login: bool) -> D
         description: Some(description),
         entries,
     }
+}
+
+/// 实际拉到的日期早于起始日时，在描述里写明跳过了哪些天。
+pub fn note_daily_fallback(
+    mut edition: DailyEdition,
+    nominal: NaiveDate,
+    actual: NaiveDate,
+    subscription_blocked: bool,
+) -> DailyEdition {
+    if nominal == actual {
+        return edition;
+    }
+    let skipped = nominal.signed_duration_since(actual).num_days();
+    let why = if subscription_blocked {
+        "没有可读内容，其中包含仍在订阅会员权益期内的日期"
+    } else {
+        "没有可读内容，可能是停更"
+    };
+    let note = format!(
+        "原定 {}（东八区 {DAILY_DELAY_DAYS} 天前）起连续 {skipped} 天{why}，已改拉 {}。",
+        nominal.format("%Y-%m-%d"),
+        actual.format("%Y-%m-%d"),
+    );
+    let base = edition.description.unwrap_or_default();
+    edition.description = Some(if base.is_empty() {
+        note
+    } else {
+        format!("{base} {note}")
+    });
+    edition
 }
 
 pub fn parse_html_daily(
@@ -720,7 +833,7 @@ struct JandanData {
     page_size: Option<i64>,
     #[serde(default)]
     is_login: bool,
-    /// 服务端给的访问级别：guest_limited / need_login 等。
+    /// 服务端给的访问级别：guest_limited / need_login / need_subscription 等。
     /// 以前这个字段被 serde 静默丢掉，导致「要登录」被误报成「没有日报」。
     access: Option<String>,
     list: Option<Vec<JandanComment>>,
@@ -751,11 +864,17 @@ mod tests {
     use chrono::{NaiveDate, TimeZone, Utc};
 
     use super::{
-        china_daily_day, jandan_api_url, jandan_edition, jandan_empty_error, jandan_has_more,
-        normalize_daily_input, parse_html_daily, parse_jandan_daily, parse_jandan_page,
-        plan_daily_request, DailyRequest, DAILY_DELAY_DAYS,
+        china_daily_day, daily_candidate_days, jandan_api_url, jandan_day_unavailable,
+        jandan_edition, jandan_empty_error, jandan_has_more, jandan_lookback_error,
+        normalize_daily_input, note_daily_fallback, parse_html_daily, parse_jandan_daily,
+        parse_jandan_page, plan_daily_request, DailyEdition, DailyRequest, DAILY_DELAY_DAYS,
+        DAILY_LOOKBACK_DAYS,
     };
     use crate::db::NewArticle;
+
+    /// 2026-11-11 实测：已登录的非会员请求东八区 7 天前（11-04）得到的就是这个包。
+    /// 11-03 起才恢复 guest_limited 并有正文，所以这是权益期，不是停更。
+    const NEED_SUBSCRIPTION: &str = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-04","total":0,"page":1,"page_size":50,"is_login":true,"access":"need_subscription","list":[]}}"#;
 
     #[test]
     fn normalize_daily_prefix_replaces_sample_date() {
@@ -813,8 +932,8 @@ mod tests {
         );
     }
 
-    /// 实测 2026-11-06：10-31 ~ 11-06 全是 need_login，10-30 起恢复 guest_limited。
-    /// 把会员权益边界钉在测试里，防止以后误改回「昨天」。
+    /// 起始日钉在「今天 - 7 天」，不要改回「昨天」。
+    /// 权益期延长时由回退逻辑继续往前找。
     #[test]
     fn daily_day_skips_member_only_window() {
         let now = Utc.with_ymd_and_hms(2026, 11, 6, 4, 0, 0).unwrap();
@@ -990,6 +1109,121 @@ mod tests {
     }
 
     #[test]
+    fn need_subscription_is_member_window_not_a_gap() {
+        let page = parse_jandan_page(NEED_SUBSCRIPTION).unwrap();
+        assert!(jandan_day_unavailable(&page, true));
+        assert!(jandan_day_unavailable(&page, false));
+        let day = NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let err = jandan_empty_error(&page, Some(day), true);
+        assert!(err.contains("need_subscription"), "{err}");
+        assert!(err.contains("is_login true"), "{err}");
+        assert!(err.contains("订阅"), "{err}");
+        assert!(!err.contains("停更"), "{err}");
+        assert!(!err.contains("不会自动回退"), "{err}");
+    }
+
+    #[test]
+    fn expired_cookie_is_not_skipped_but_missing_cookie_is() {
+        let page = parse_jandan_page(NEED_LOGIN).unwrap();
+        assert!(
+            !jandan_day_unavailable(&page, true),
+            "配了 Cookie 仍被判未登录时要直接报错，不能靠回退掩盖"
+        );
+        assert!(
+            jandan_day_unavailable(&page, false),
+            "没配 Cookie 时，权益期延长会表现为 need_login，应回退到更早的免费日"
+        );
+    }
+
+    #[test]
+    fn empty_guest_day_is_skipped_but_broken_payloads_are_not() {
+        let empty = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":0,"is_login":false,"access":"guest_limited","list":[]}}"#;
+        assert!(jandan_day_unavailable(
+            &parse_jandan_page(empty).unwrap(),
+            false
+        ));
+        let missing = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":0,"is_login":false,"access":"guest_limited"}}"#;
+        assert!(!jandan_day_unavailable(
+            &parse_jandan_page(missing).unwrap(),
+            false
+        ));
+        let truncated = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-05","total":62,"is_login":false,"access":"guest_limited","list":[]}}"#;
+        assert!(!jandan_day_unavailable(
+            &parse_jandan_page(truncated).unwrap(),
+            false
+        ));
+        let has_entries = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-03","total":1,"is_login":true,"access":"guest_limited","list":[{"id":1,"content":"有"}]}}"#;
+        assert!(!jandan_day_unavailable(
+            &parse_jandan_page(has_entries).unwrap(),
+            true
+        ));
+    }
+
+    #[test]
+    fn candidate_days_walk_back_from_the_delayed_day() {
+        // 2026-11-11 12:00 CST，起始日是 11-04，再往前共 14 天，最后一天是 10-22
+        let now = Utc.with_ymd_and_hms(2026, 11, 11, 4, 0, 0).unwrap();
+        let days = daily_candidate_days(now);
+        assert_eq!(days.len(), DAILY_LOOKBACK_DAYS as usize);
+        assert_eq!(days[0], NaiveDate::from_ymd_opt(2026, 11, 4).unwrap());
+        assert_eq!(days[1], NaiveDate::from_ymd_opt(2026, 11, 3).unwrap());
+        assert_eq!(
+            *days.last().unwrap(),
+            NaiveDate::from_ymd_opt(2026, 10, 22).unwrap()
+        );
+    }
+
+    #[test]
+    fn lookback_error_names_the_tried_span() {
+        let page = parse_jandan_page(NEED_SUBSCRIPTION).unwrap();
+        let tried = [
+            NaiveDate::from_ymd_opt(2026, 11, 4).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 11, 3).unwrap(),
+            NaiveDate::from_ymd_opt(2026, 11, 2).unwrap(),
+        ];
+        let err = jandan_lookback_error(&page, &tried, true);
+        assert!(err.contains("2026-11-04"), "{err}");
+        assert!(err.contains("2026-11-02"), "{err}");
+        assert!(err.contains("3 天"), "{err}");
+        assert!(err.contains("订阅"), "{err}");
+    }
+
+    #[test]
+    fn fallback_note_names_skipped_member_days() {
+        let nominal = NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let actual = NaiveDate::from_ymd_opt(2026, 11, 3).unwrap();
+        let edition = DailyEdition {
+            title: Some("煎蛋日报".into()),
+            site_url: None,
+            description: Some("拉取 2026-11-03，当天 80 条。".into()),
+            entries: vec![],
+        };
+        let desc = note_daily_fallback(edition, nominal, actual, true)
+            .description
+            .unwrap();
+        assert!(desc.contains("2026-11-04"), "{desc}");
+        assert!(desc.contains("2026-11-03"), "{desc}");
+        assert!(desc.contains("订阅"), "{desc}");
+        assert!(desc.contains("80"), "{desc}");
+    }
+
+    #[test]
+    fn fallback_note_keeps_description_on_the_nominal_day() {
+        let day = NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let edition = DailyEdition {
+            title: None,
+            site_url: None,
+            description: Some("拉取 2026-11-04，当天 10 条。".into()),
+            entries: vec![],
+        };
+        let noted = note_daily_fallback(edition, day, day, false);
+        assert_eq!(
+            noted.description.as_deref(),
+            Some("拉取 2026-11-04，当天 10 条。")
+        );
+    }
+
+    #[test]
     fn empty_error_flags_date_rewrite() {
         let body = r#"{"code":0,"msg":"success","data":{"report_date":"2026-11-06","total":0,"is_login":false,"access":"need_login","list":[]}}"#;
         let page = parse_jandan_page(body).unwrap();
@@ -1071,9 +1305,9 @@ mod tests {
     #[test]
     fn edition_mentions_login_only_when_short() {
         let one = dummy_article("1");
-        let partial = jandan_edition(vec![one.clone()], 65, false);
+        let partial = jandan_edition(vec![one.clone()], 65, false, None);
         assert!(partial.description.unwrap().contains("未登录"));
-        let full = jandan_edition(vec![one, dummy_article("2")], 2, true);
+        let full = jandan_edition(vec![one, dummy_article("2")], 2, true, None);
         let desc = full.description.unwrap();
         assert!(!desc.contains("未登录"), "{desc}");
         assert!(desc.contains("2"), "{desc}");
